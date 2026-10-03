@@ -1,0 +1,176 @@
+{
+  "scope": "aux4",
+  "name": "remote",
+  "version": "0.1.0",
+  "description": "run aux4 (and shell) commands on another machine through an aux4/cloud-remote relay server",
+  "license": "MIT",
+  "dependencies": [
+    "aux4/config"
+  ],
+  "tags": [
+    "aux4",
+    "remote",
+    "ssh",
+    "relay",
+    "websocket"
+  ],
+  "profiles": [
+    {
+      "name": "main",
+      "commands": [
+        {
+          "name": "remote",
+          "execute": [
+            "if(command==) && ${packageDir}/aux4-remote call-json values(server, token) value(args*) || ${packageDir}/aux4-remote call-line values(server, token) value(command)"
+          ],
+          "help": {
+            "text": "Run a command on a remote machine through the relay server",
+            "variables": [
+              {
+                "name": "args",
+                "text": "The target machine name followed by the command and its arguments (no single-dash flags; use --command for those)",
+                "arg": true,
+                "multiple": true
+              },
+              {
+                "name": "command",
+                "text": "Alternative to the positional form: \"<machine> <command and args>\" as one shell-quoted string, needed when the command has single-dash flags (e.g. --command \"build-box ls -la /tmp\")",
+                "default": ""
+              },
+              {
+                "name": "server",
+                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+              },
+              {
+                "name": "token",
+                "text": "Bearer token for the relay server",
+                "hide": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "aux4",
+      "commands": [
+        {
+          "name": "remote",
+          "execute": [
+            "profile:aux4:remote"
+          ],
+          "help": {
+            "text": "Manage aux4/remote: this machine's connection to a relay server"
+          }
+        }
+      ]
+    },
+    {
+      "name": "aux4:remote",
+      "commands": [
+        {
+          "name": "connect",
+          "execute": [
+            "mkdir -p ${dataDir}",
+            "set:logFile=${dataDir}/${name}.log",
+            "set:pidFile=${dataDir}/${name}.pid",
+            "nohup ${packageDir}/aux4-remote client values(name, server, token, expose) > value(logFile) 2>&1 & echo $! > value(pidFile)",
+            "log:Connecting value(name) to ${server} (logs: ${logFile})"
+          ],
+          "help": {
+            "text": "Connect this machine to a relay server, exposing allowed commands",
+            "variables": [
+              {
+                "name": "name",
+                "text": "This machine's name, as other machines will address it"
+              },
+              {
+                "name": "server",
+                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+              },
+              {
+                "name": "token",
+                "text": "This machine's bearer token, configured on the relay server",
+                "hide": true
+              },
+              {
+                "name": "expose",
+                "text": "Allow/ask/deny glob patterns for commands this machine will run (JSON object). An empty/missing value exposes nothing",
+                "default": "{}"
+              },
+              {
+                "name": "dataDir",
+                "text": "Directory to store the connection's pid and log file",
+                "default": "${aux4HomeDir}/remote"
+              }
+            ]
+          }
+        },
+        {
+          "name": "disconnect",
+          "execute": [
+            "set:pidFile=${dataDir}/${name}.pid",
+            "kill $(cat value(pidFile)) 2>/dev/null || true",
+            "rm -f value(pidFile)",
+            "log:Disconnected value(name)"
+          ],
+          "help": {
+            "text": "Disconnect this machine from the relay server",
+            "variables": [
+              {
+                "name": "name",
+                "text": "The machine name used when connecting"
+              },
+              {
+                "name": "dataDir",
+                "text": "Directory where the connection's pid and log file are stored",
+                "default": "${aux4HomeDir}/remote"
+              }
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "execute": [
+            "set:pidFile=${dataDir}/${name}.pid",
+            "${packageDir}/aux4-remote status values(pidFile, name)"
+          ],
+          "help": {
+            "text": "Show whether this machine's connection to the relay server is running",
+            "variables": [
+              {
+                "name": "name",
+                "text": "The machine name used when connecting"
+              },
+              {
+                "name": "dataDir",
+                "text": "Directory where the connection's pid and log file are stored",
+                "default": "${aux4HomeDir}/remote"
+              }
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "execute": [
+            "${packageDir}/aux4-remote machine-list values(server, token)"
+          ],
+          "help": {
+            "text": "List machines currently connected to the relay server",
+            "variables": [
+              {
+                "name": "server",
+                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+              },
+              {
+                "name": "token",
+                "text": "A valid bearer token for the relay server",
+                "hide": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

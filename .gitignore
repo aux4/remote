@@ -1,0 +1,6 @@
+package/dist/
+package/aux4-remote
+package/*.zip
+aux4-remote
+.aux4-remote*
+.DS_Store

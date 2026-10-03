@@ -1,0 +1,98 @@
+name: Publish Package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!README.md'
+      - '!LICENSE'
+      - '!.gitignore'
+
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Release level (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        uses: aux4/test-package-action@v1
+        with:
+          build_command: aux4 builder linux
+
+  test-darwin:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        uses: aux4/test-package-action@v1
+        with:
+          build_command: aux4 builder darwin
+
+  publish:
+    needs: [test-linux, test-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Build
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -o package/dist/darwin/amd64/aux4-remote .
+          GOOS=darwin GOARCH=arm64 go build -o package/dist/darwin/arm64/aux4-remote .
+          GOOS=linux GOARCH=amd64 go build -o package/dist/linux/amd64/aux4-remote .
+          GOOS=linux GOARCH=arm64 go build -o package/dist/linux/arm64/aux4-remote .
+          GOOS=linux GOARCH=386 go build -o package/dist/linux/386/aux4-remote .
+          GOOS=windows GOARCH=amd64 go build -o package/dist/windows/amd64/aux4-remote.exe .
+          GOOS=windows GOARCH=arm64 go build -o package/dist/windows/arm64/aux4-remote.exe .
+          GOOS=windows GOARCH=386 go build -o package/dist/windows/386/aux4-remote.exe .
+
+      - name: Publish package
+        uses: aux4/publish-package-action@v1
+        with:
+          working_directory: package
+          package_directory: .
+          level: ${{ inputs.level || 'patch' }}
+          aux4_token: ${{ secrets.AUX4_ACCESS_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
