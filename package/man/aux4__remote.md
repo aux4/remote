@@ -16,5 +16,5 @@ aux4 aux4 remote <connect|disconnect|status|list> ...
 ```bash
 aux4 aux4 remote connect --configFile config.yaml --config build-box
 aux4 aux4 remote status --name build-box
-aux4 aux4 remote list --server ws://relay:8420/ws --token mytoken
+aux4 aux4 remote list --server ws://relay:8420/ws
 ```

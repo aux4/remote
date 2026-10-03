@@ -57,12 +57,43 @@ func dialCaller(serverURL, token string) (*websocket.Conn, error) {
 	header.Set("Authorization", "Bearer "+token)
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.Dial(buildWSURL(serverURL), header)
-	return conn, err
+	if err != nil {
+		return nil, err
+	}
+	if err := awaitReady(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// awaitReady blocks until the relay confirms its $connect handler has
+// finished validating this connection's token and committing it to the
+// registry. aux4/api completes the websocket handshake without waiting for
+// $connect to run, so without this a caller's exec/list sent immediately
+// after dialing can arrive before the relay even knows who it is, and get
+// silently dropped (never replied to) instead of an error.
+func awaitReady(conn *websocket.Conn) error {
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("no response from relay server: %w", err)
+	}
+	var msg execMessage
+	if err := json.Unmarshal(data, &msg); err != nil || msg.Action != "ready" {
+		return fmt.Errorf("unexpected response from relay server while connecting")
+	}
+	return nil
 }
 
 // runCall executes args on machine and exits the process with the remote
 // exit code (never returns on success).
-func runCall(serverURL, token, machine string, args []string) {
+func runCall(serverURL, machine string, args []string) {
+	token, err := accessToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	conn, err := dialCaller(serverURL, token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot reach relay server: %v\n", err)
@@ -123,7 +154,12 @@ type listReply struct {
 }
 
 // runList prints the currently connected machine names, one per line.
-func runList(serverURL, token string) {
+func runList(serverURL string) {
+	token, err := accessToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	conn, err := dialCaller(serverURL, token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot reach relay server: %v\n", err)

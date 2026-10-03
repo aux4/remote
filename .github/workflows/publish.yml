@@ -79,14 +79,14 @@ jobs:
 
       - name: Build
         run: |
-          GOOS=darwin GOARCH=amd64 go build -o package/dist/darwin/amd64/aux4-remote .
-          GOOS=darwin GOARCH=arm64 go build -o package/dist/darwin/arm64/aux4-remote .
-          GOOS=linux GOARCH=amd64 go build -o package/dist/linux/amd64/aux4-remote .
-          GOOS=linux GOARCH=arm64 go build -o package/dist/linux/arm64/aux4-remote .
-          GOOS=linux GOARCH=386 go build -o package/dist/linux/386/aux4-remote .
-          GOOS=windows GOARCH=amd64 go build -o package/dist/windows/amd64/aux4-remote.exe .
-          GOOS=windows GOARCH=arm64 go build -o package/dist/windows/arm64/aux4-remote.exe .
-          GOOS=windows GOARCH=386 go build -o package/dist/windows/386/aux4-remote.exe .
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -trimpath -o package/dist/darwin/amd64/aux4-remote .
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -trimpath -o package/dist/darwin/arm64/aux4-remote .
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -trimpath -o package/dist/linux/amd64/aux4-remote .
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -trimpath -o package/dist/linux/arm64/aux4-remote .
+          GOOS=linux GOARCH=386 go build -ldflags "-s -w" -trimpath -o package/dist/linux/386/aux4-remote .
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -trimpath -o package/dist/windows/amd64/aux4-remote.exe .
+          GOOS=windows GOARCH=arm64 go build -ldflags "-s -w" -trimpath -o package/dist/windows/arm64/aux4-remote.exe .
+          GOOS=windows GOARCH=386 go build -ldflags "-s -w" -trimpath -o package/dist/windows/386/aux4-remote.exe .
 
       - name: Publish package
         uses: aux4/publish-package-action@v1

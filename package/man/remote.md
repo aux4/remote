@@ -15,22 +15,22 @@ that needs single-dash flags, use `--command` instead and put the machine name a
 in one shell-quoted string: `aux4 remote --command "build-box ls -la /tmp"`. Long `--flags` on the
 remote command do not have this problem and work fine positionally.
 
-- **`--server`** and **`--token`** identify the relay server to connect to and the bearer token to
-  authenticate with. They are typically supplied via `--configFile`/`--config` pointing at the same
-  config file used for `aux4 aux4 remote connect`.
+- **`--server`** identifies the relay server to connect to; it is typically supplied via
+  `--configFile`/`--config` pointing at the same config file used for `aux4 aux4 remote connect`.
+  Authentication is your aux4 login (`AUX4_ACCESS_TOKEN` if set, else `aux4 aux4 token`) — there is no
+  separate token to pass. Only machines registered under the same aux4 account are reachable.
 - Standard output and standard error from the remote command are streamed back as they are produced,
   not buffered until completion.
 
 #### Usage
 
 ```bash
-aux4 remote <machine> <command> [args...] [--server <url>] [--token <token>]
-aux4 remote --command "<machine> <command> [args...]" [--server <url>] [--token <token>]
+aux4 remote <machine> <command> [args...] [--server <url>]
+aux4 remote --command "<machine> <command> [args...]" [--server <url>]
 ```
 
 --command  Alternative to the positional form, as one shell-quoted string (needed for single-dash flags)
 --server   Relay server websocket URL (e.g. `ws://relay.example.com:8420/ws`)
---token    Bearer token for the relay server
 
 #### Example
 

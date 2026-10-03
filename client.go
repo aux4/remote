@@ -21,11 +21,18 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func runClient(name, serverURL, token, exposeJSON string) {
+func runClient(name, serverURL, exposeJSON string) {
 	policy := parseExpose(exposeJSON)
 	wsURL := buildWSURL(serverURL)
 
 	for {
+		token, err := accessToken()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "remote: %v, retrying...\n", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
 		conn, err := dialMachine(name, wsURL, token)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "remote: connect failed: %v, retrying...\n", err)
@@ -40,6 +47,9 @@ func runClient(name, serverURL, token, exposeJSON string) {
 	}
 }
 
+// dialMachine fetches a fresh access token for every (re)connect attempt, so
+// a long-lived daemon picks up a refreshed token automatically instead of
+// authenticating forever with the token it started with.
 func dialMachine(name, serverURL, token string) (*websocket.Conn, error) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)

@@ -25,8 +25,8 @@
         {
           "name": "darwin",
           "execute": [
-            "cd ${packageDir} && GOOS=darwin GOARCH=amd64 go build -o package/dist/darwin/amd64/aux4-remote .",
-            "cd ${packageDir} && GOOS=darwin GOARCH=arm64 go build -o package/dist/darwin/arm64/aux4-remote ."
+            "cd ${packageDir} && GOOS=darwin GOARCH=amd64 go build -ldflags \"-s -w\" -trimpath -o package/dist/darwin/amd64/aux4-remote .",
+            "cd ${packageDir} && GOOS=darwin GOARCH=arm64 go build -ldflags \"-s -w\" -trimpath -o package/dist/darwin/arm64/aux4-remote ."
           ],
           "help": {
             "text": "Build for macOS"
@@ -35,9 +35,9 @@
         {
           "name": "linux",
           "execute": [
-            "cd ${packageDir} && GOOS=linux GOARCH=amd64 go build -o package/dist/linux/amd64/aux4-remote .",
-            "cd ${packageDir} && GOOS=linux GOARCH=arm64 go build -o package/dist/linux/arm64/aux4-remote .",
-            "cd ${packageDir} && GOOS=linux GOARCH=386 go build -o package/dist/linux/386/aux4-remote ."
+            "cd ${packageDir} && GOOS=linux GOARCH=amd64 go build -ldflags \"-s -w\" -trimpath -o package/dist/linux/amd64/aux4-remote .",
+            "cd ${packageDir} && GOOS=linux GOARCH=arm64 go build -ldflags \"-s -w\" -trimpath -o package/dist/linux/arm64/aux4-remote .",
+            "cd ${packageDir} && GOOS=linux GOARCH=386 go build -ldflags \"-s -w\" -trimpath -o package/dist/linux/386/aux4-remote ."
           ],
           "help": {
             "text": "Build for Linux"
@@ -46,9 +46,9 @@
         {
           "name": "windows",
           "execute": [
-            "cd ${packageDir} && GOOS=windows GOARCH=amd64 go build -o package/dist/windows/amd64/aux4-remote.exe .",
-            "cd ${packageDir} && GOOS=windows GOARCH=arm64 go build -o package/dist/windows/arm64/aux4-remote.exe .",
-            "cd ${packageDir} && GOOS=windows GOARCH=386 go build -o package/dist/windows/386/aux4-remote.exe ."
+            "cd ${packageDir} && GOOS=windows GOARCH=amd64 go build -ldflags \"-s -w\" -trimpath -o package/dist/windows/amd64/aux4-remote.exe .",
+            "cd ${packageDir} && GOOS=windows GOARCH=arm64 go build -ldflags \"-s -w\" -trimpath -o package/dist/windows/arm64/aux4-remote.exe .",
+            "cd ${packageDir} && GOOS=windows GOARCH=386 go build -ldflags \"-s -w\" -trimpath -o package/dist/windows/386/aux4-remote.exe ."
           ],
           "help": {
             "text": "Build for Windows"

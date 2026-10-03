@@ -1,7 +1,7 @@
 {
   "scope": "aux4",
   "name": "remote",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "run aux4 (and shell) commands on another machine through an aux4/cloud-remote relay server",
   "license": "MIT",
   "dependencies": [
@@ -21,10 +21,10 @@
         {
           "name": "remote",
           "execute": [
-            "if(command==) && ${packageDir}/aux4-remote call-json values(server, token) value(args*) || ${packageDir}/aux4-remote call-line values(server, token) value(command)"
+            "${packageDir}/aux4-remote call-auto value(server) value(args*) value(command)"
           ],
           "help": {
-            "text": "Run a command on a remote machine through the relay server",
+            "text": "Run a command on a remote machine through the relay server, authenticated with your aux4 login",
             "variables": [
               {
                 "name": "args",
@@ -40,11 +40,6 @@
               {
                 "name": "server",
                 "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
-              },
-              {
-                "name": "token",
-                "text": "Bearer token for the relay server",
-                "hide": true
               }
             ]
           }
@@ -74,24 +69,19 @@
             "mkdir -p ${dataDir}",
             "set:logFile=${dataDir}/${name}.log",
             "set:pidFile=${dataDir}/${name}.pid",
-            "nohup ${packageDir}/aux4-remote client values(name, server, token, expose) > value(logFile) 2>&1 & echo $! > value(pidFile)",
+            "nohup ${packageDir}/aux4-remote client values(name, server, expose) > value(logFile) 2>&1 & echo $! > value(pidFile)",
             "log:Connecting value(name) to ${server} (logs: ${logFile})"
           ],
           "help": {
-            "text": "Connect this machine to a relay server, exposing allowed commands",
+            "text": "Connect this machine to a relay server, exposing allowed commands. Authenticates with your aux4 login (run `aux4 aux4 login` first if needed)",
             "variables": [
               {
                 "name": "name",
-                "text": "This machine's name, as other machines will address it"
+                "text": "This machine's name, as other machines will address it (unique per your aux4 account)"
               },
               {
                 "name": "server",
                 "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
-              },
-              {
-                "name": "token",
-                "text": "This machine's bearer token, configured on the relay server",
-                "hide": true
               },
               {
                 "name": "expose",
@@ -153,19 +143,14 @@
         {
           "name": "list",
           "execute": [
-            "${packageDir}/aux4-remote machine-list values(server, token)"
+            "${packageDir}/aux4-remote machine-list value(server)"
           ],
           "help": {
-            "text": "List machines currently connected to the relay server",
+            "text": "List machines you have connected to the relay server",
             "variables": [
               {
                 "name": "server",
                 "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
-              },
-              {
-                "name": "token",
-                "text": "A valid bearer token for the relay server",
-                "hide": true
               }
             ]
           }
