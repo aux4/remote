@@ -41,10 +41,6 @@ permissions:
 jobs:
   test-linux:
     runs-on: ubuntu-latest
-    # aux4/cloud-remote (the relay this test suite depends on) is cloud-dev-only and not
-    # yet on the prod hub, so on the dev branch point pkger at the dev hub to find it.
-    env:
-      AUX4_REGISTRY_URL: ${{ github.ref_name == 'dev' && 'https://dev.api.hub.aux4.io/v1/packages' || '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -54,18 +50,26 @@ jobs:
         with:
           go-version: '1.23'
 
+      # aux4/cloud-remote (the relay this test suite depends on) is cloud-dev-only
+      # and not yet on the prod hub. Install it from the dev hub first, scoped to
+      # just this command, before test-package-action's own bootstrap runs (which
+      # must stay on the default/prod hub, or its own pkger/jest install breaks).
+      - name: Install aux4/cloud-remote test dependency from dev hub
+        if: github.ref_name == 'dev'
+        shell: bash
+        run: |
+          curl -fsSL https://aux4.sh | sh
+          curl -fsSL https://pkger.aux4.sh | sh
+          export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
+          AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
+
       - name: Test
         uses: aux4/test-package-action@v1
         with:
-          packages: aux4/cloud-remote
           build_command: aux4 builder linux
 
   test-darwin:
     runs-on: macos-latest
-    # aux4/cloud-remote (the relay this test suite depends on) is cloud-dev-only and not
-    # yet on the prod hub, so on the dev branch point pkger at the dev hub to find it.
-    env:
-      AUX4_REGISTRY_URL: ${{ github.ref_name == 'dev' && 'https://dev.api.hub.aux4.io/v1/packages' || '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -75,10 +79,22 @@ jobs:
         with:
           go-version: '1.23'
 
+      # aux4/cloud-remote (the relay this test suite depends on) is cloud-dev-only
+      # and not yet on the prod hub. Install it from the dev hub first, scoped to
+      # just this command, before test-package-action's own bootstrap runs (which
+      # must stay on the default/prod hub, or its own pkger/jest install breaks).
+      - name: Install aux4/cloud-remote test dependency from dev hub
+        if: github.ref_name == 'dev'
+        shell: bash
+        run: |
+          curl -fsSL https://aux4.sh | sh
+          curl -fsSL https://pkger.aux4.sh | sh
+          export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
+          AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
+
       - name: Test
         uses: aux4/test-package-action@v1
         with:
-          packages: aux4/cloud-remote
           build_command: aux4 builder darwin
 
   publish:
