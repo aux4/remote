@@ -110,9 +110,19 @@ aux4 SSO access token, the same one every other aux4 CLI command uses:
 - If `AUX4_ACCESS_TOKEN` is set, it is used directly (useful for CI, and for a machine running
   unattended where `aux4 aux4 login`'s interactive flow is not an option).
 - Otherwise, `aux4 aux4 token` resolves (and transparently refreshes) your current login from
-  `~/.aux4.config` — the exact same helper other aux4 CLI tooling uses.
-- On an aux4 cloud VM, the platform injects `AUX4_ACCESS_TOKEN` into the command's environment
-  automatically — no extra setup needed there.
+  `~/.aux4.config` — the exact same helper other aux4 CLI tooling uses. This path needs
+  `aux4/pkger` installed; a cloud VM deployed with only `aux4/remote` does not have it, so it
+  relies entirely on the next point.
+- **On an aux4 cloud VM, `AUX4_ACCESS_TOKEN` is injected per invocation, not at deploy time.**
+  Every call to `aux4 cloud <vm> <command>` (including one where `<command>` is `remote <machine>
+  <cmd>`, i.e. this VM acting as the *caller*) carries a short-lived identity token for that one
+  invocation; the VM's runtime verifies it and exports it to the invoked command's environment as
+  `AUX4_ACCESS_TOKEN`. This requires `aux4/cloud` **1.2.17 or later** as the CLI the caller runs
+  locally — earlier versions silently dropped that token while following the control plane's
+  redirect to the VM, so the command ran with no `AUX4_ACCESS_TOKEN` at all (RMT-010) and
+  `aux4/remote` fell back to `aux4 aux4 token`, which fails outright on a VM without `aux4/pkger`.
+  An explicit `--env AUX4_ACCESS_TOKEN=...` at deploy time has no effect on this path — deploy-time
+  env vars and this per-invocation injection are two different, unrelated mechanisms.
 
 **Machine names are scoped to your own aux4 account.** Two different aux4 users can both register a
 machine named `build-box` without conflict, and neither can list or run commands on the other's

@@ -1,5 +1,18 @@
 # Release Notes
 
+## 0.3.6
+
+- **Docs: corrected how `AUX4_ACCESS_TOKEN` reaches a caller running on an aux4 cloud VM
+  (RMT-010).** The README said the platform "injects `AUX4_ACCESS_TOKEN` into the command's
+  environment automatically — no extra setup needed there", which read as a deploy-time, always-on
+  guarantee. In reality it is injected **per invocation** by `aux4 cloud`'s redirect-and-reattach
+  handling of the caller's identity token, and only works with `aux4/cloud` 1.2.17+ as the CLI the
+  caller runs locally — older versions silently dropped it, which is what made `aux4/remote` fail
+  with `not logged in to aux4` on a VM even with an explicit `--env AUX4_ACCESS_TOKEN=...` at
+  deploy time (that env var is unrelated to this mechanism). No code change in this package: its
+  own token resolution (`AUX4_ACCESS_TOKEN` env first, `aux4 aux4 token` fallback) was already
+  correct — the gap was in `aux4/cloud`, now fixed there.
+
 ## 0.3.5
 
 - **The `expose` policy is now enforced by aux4 core itself, not re-implemented in this daemon.**
