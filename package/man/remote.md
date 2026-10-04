@@ -24,8 +24,8 @@ stream (never merged); redirecting one away locally does not affect the other. A
 |------|---------|
 | `0`–`125` | The remote command's own exit code, passed through unchanged. |
 | `124` | Execution deadline exceeded (`AUX4_REMOTE_EXEC_TIMEOUT`, default 10 minutes); the command was killed. |
-| `126` | Denied by the target machine's `expose` policy, or the exec's arguments were rejected outright. |
-| `127` | The remote `aux4` reported "command not found" for the given arguments. |
+| `126` | The exec's own arguments were rejected outright before anything ran (crafted/irregular whitespace). This is the only case `aux4/remote` itself denies. |
+| `127` | The remote `aux4` reported "command not found" — either the arguments don't resolve to a real command, **or** the target machine's `expose` policy does not permit it. `expose` is enforced by aux4 core itself via `AUX4_SECURITY`, which reports a denied command the same way as a nonexistent one. |
 | `1` | Relay unreachable, invalid access token, or the target machine is offline — the command never ran. |
 
 **Single-dash flags**: aux4's own CLI parser treats a bare `-x` token as one of *its* options, so a
@@ -42,6 +42,15 @@ still be misread by aux4's own CLI parser before it ever reaches `aux4 remote` �
 escape hatch for that case. `aux4 cloud` also forwards piped stdin to the remote command; `aux4/remote`
 does not forward stdin.
 
+- **Discovery**: `aux4 remote <machine> aux4` — the bare `aux4` call with no further arguments — runs
+  the nested `aux4 aux4` command listing, filtered by the target machine's `expose` policy the same way
+  aux4 core filters it for any locally restricted install: an `allow` pattern that reaches a descendant
+  (e.g. `"aux4 version"`) also makes the `aux4` group itself reachable, so the listing shows exactly the
+  subcommands that pattern allows, with no dedicated discovery command or special `allow` entry needed.
+  If `expose` has no `allow` entries at all, the group is unreachable like anything else the policy
+  denies (exit `127`, "Command not found: aux4"); if it has entries but none resolve to an actual
+  subcommand (e.g. `allow: ["aux4"]` alone), the group is reachable but the listing is empty (exit `0`,
+  no output).
 - **`--server`** identifies the relay server to connect to; it is typically supplied via
   `--configFile`/`--config` pointing at the same config file used for `aux4 aux4 remote connect`.
   Authentication is your aux4 login (`AUX4_ACCESS_TOKEN` if set, else `aux4 aux4 token`) — there is no
@@ -91,5 +100,8 @@ aux4 remote build-box aux4 pkger uninstall aux4/important --config build-box --c
 ```
 
 ```text
-Error: aux4 command "aux4 pkger uninstall aux4/important" is not permitted by this machine's expose policy
+Command not found: aux4
 ```
+
+(`build-box`'s `expose` policy does not permit `aux4 pkger uninstall aux4/important`; aux4 core reports
+a denied command the same way it reports one that does not exist — see Exit Codes above.)

@@ -28,11 +28,15 @@ import (
 // resolveSecurityPolicy): --security lets a caller set the AUX4_SECURITY
 // policy for the invocation it is making. It must never be forwarded to the
 // remote command line - doing so would let a caller override the *remote
-// machine's* expose policy for its own nested `aux4` invocation, defeating
-// the defense-in-depth AUX4_SECURITY this daemon already sets from the
-// machine's own `expose` config (see toAux4Security in security.go). Listed
-// here even though a dot-notation `--security.allow ...` value would already
-// arrive as a non-scalar map (and so be refused by shape below) - this is
+// machine's* expose policy for its own nested `aux4` invocation. The nested
+// `aux4` process is what actually enforces that policy (see buildSecurityEnv
+// in security.go, which renders the machine's own `expose` config into
+// AUX4_SECURITY and sets it last in the child's environment specifically so
+// nothing else - including a forwarded flag - can override it); this
+// blocklist entry is what stops a forwarded `--security` from ever reaching
+// the remote command line in the first place. Listed here even though a
+// dot-notation `--security.allow ...` value would already arrive as a
+// non-scalar map (and so be refused by shape below) - this is
 // belt-and-suspenders against a flat/string form ever being accepted by a
 // future change to how aux4 core exposes this flag.
 var reservedParams = map[string]bool{

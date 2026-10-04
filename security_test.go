@@ -1,89 +1,123 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestIsExposed_NilPolicyDeniesEverything(t *testing.T) {
-	if isExposed(nil, "todo list") {
-		t.Fatal("expected nil policy to deny everything")
+// stubAux4Version puts a fake "aux4" on PATH whose `aux4 version` subcommand
+// prints versionLine, for the duration of the test, so
+// checkAux4SecuritySupported resolves to it instead of whatever real aux4 is
+// actually installed on the machine running this test suite.
+func stubAux4Version(t *testing.T, versionLine string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script is POSIX shell only")
 	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "aux4")
+	content := "#!/bin/sh\necho '" + versionLine + "'\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
 }
 
-func TestIsExposed_EmptyAllowDeniesEverything(t *testing.T) {
-	p := parseExpose(map[string]interface{}{})
-	if isExposed(p, "todo list") {
-		t.Fatal("expected policy with no allow patterns to deny everything")
+func decodeSecurity(t *testing.T, s string) exposeJSON {
+	t.Helper()
+	var ej exposeJSON
+	if err := json.Unmarshal([]byte(s), &ej); err != nil {
+		t.Fatalf("buildSecurityEnv produced invalid JSON %q: %v", s, err)
 	}
+	return ej
 }
 
-func TestIsExposed_AllowsExactMatch(t *testing.T) {
-	p := parseExpose(`{"allow":["aux4 version"]}`)
-	if !isExposed(p, "aux4 version") {
-		t.Fatal("expected \"aux4 version\" to be allowed")
-	}
-	if isExposed(p, "aux4 aux4 version") {
-		t.Fatal("expected a different command line not to be allowed")
-	}
-}
-
-func TestIsExposed_AllowsGlob(t *testing.T) {
-	p := parseExpose(`{"allow":["todo list*"]}`)
-	if !isExposed(p, "todo list") {
-		t.Fatal("expected \"todo list\" to match \"todo list*\"")
-	}
-	if !isExposed(p, "todo list --all") {
-		t.Fatal("expected \"todo list --all\" to match \"todo list*\"")
-	}
-	if isExposed(p, "todo rm") {
-		t.Fatal("expected \"todo rm\" not to match \"todo list*\"")
-	}
-}
-
-func TestIsExposed_MostSpecificWins(t *testing.T) {
-	p := parseExpose(`{"allow":["todo *"],"deny":["todo rm*"]}`)
-	if !isExposed(p, "todo list") {
-		t.Fatal("expected \"todo list\" to be allowed by the broader allow pattern")
-	}
-	if isExposed(p, "todo rm 1") {
-		t.Fatal("expected \"todo rm 1\" to be denied by the more specific deny pattern")
-	}
-}
-
-func TestIsExposed_DenyBeatsAllowOnTie(t *testing.T) {
-	p := parseExpose(`{"allow":["todo list"],"deny":["todo list"]}`)
-	if isExposed(p, "todo list") {
-		t.Fatal("expected deny to win a specificity tie against allow")
-	}
-}
-
-func TestIsExposed_AskIsTreatedAsDeny(t *testing.T) {
-	p := parseExpose(`{"allow":["todo *"],"ask":["todo rm*"]}`)
-	if isExposed(p, "todo rm 1") {
-		t.Fatal("expected ask to be treated as deny (daemon is non-interactive)")
-	}
-}
-
-func TestToAux4Security_NilPolicy(t *testing.T) {
-	got := toAux4Security(nil)
+func TestBuildSecurityEnv_EmptyConfigDeniesEverything(t *testing.T) {
+	got := buildSecurityEnv("")
 	if got != `{"deny":["*"]}` {
-		t.Fatalf("expected a deny-everything policy for nil, got %q", got)
+		t.Fatalf("expected an empty expose config to render as deny-all, got %q", got)
 	}
 }
 
-func TestToAux4Security_PassesThroughSamePatterns(t *testing.T) {
-	p := parseExpose(`{"allow":["todo list*","aux4 version"],"deny":["todo rm*"]}`)
-	got := toAux4Security(p)
-	// The rendered JSON must carry the exact same pattern strings remote itself
-	// matches msg.Args against, so a nested `aux4` process (core's
-	// enforceSecurity, which evaluates the path as typed after `aux4`,
-	// space-joined) reaches the identical decision as this machine already did.
-	for _, want := range []string{"todo list*", "aux4 version", "todo rm*"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("expected AUX4_SECURITY %q to contain pattern %q", got, want)
+func TestBuildSecurityEnv_UnparsableConfigDeniesEverything(t *testing.T) {
+	got := buildSecurityEnv("not json")
+	if got != `{"deny":["*"]}` {
+		t.Fatalf("expected an unparsable expose config to fail closed as deny-all, got %q", got)
+	}
+}
+
+func TestBuildSecurityEnv_EmptyAllowDeniesEverything(t *testing.T) {
+	// aux4 core itself treats {} / an empty allow list as "nothing has been
+	// restricted - allow everything" (its own sensible interactive default).
+	// aux4/remote's fail-closed convention is the opposite: no allow entries
+	// means nothing is exposed, so this must render as an explicit deny-all,
+	// never as an empty "allow" key that core would read as unrestricted.
+	for _, cfg := range []string{`{}`, `{"allow":[]}`, `{"deny":["todo rm*"]}`} {
+		got := buildSecurityEnv(cfg)
+		if got != `{"deny":["*"]}` {
+			t.Fatalf("expected expose config %q with no allow entries to render as deny-all, got %q", cfg, got)
 		}
 	}
+}
+
+func TestBuildSecurityEnv_PassesThroughAllowAndDeny(t *testing.T) {
+	got := decodeSecurity(t, buildSecurityEnv(`{"allow":["aux4 version","todo list*"],"deny":["todo rm*"]}`))
+	if !equalSet(got.Allow, []string{"aux4 version", "todo list*"}) {
+		t.Fatalf("expected allow patterns to pass through unchanged, got %v", got.Allow)
+	}
+	if !equalSet(got.Deny, []string{"todo rm*"}) {
+		t.Fatalf("expected deny patterns to pass through unchanged, got %v", got.Deny)
+	}
+}
+
+func TestBuildSecurityEnv_FoldsAskIntoDeny(t *testing.T) {
+	// The daemon is non-interactive: if `ask` were forwarded as `ask`, a
+	// nested aux4 with no controlling terminal would write an interactive
+	// confirmation prompt (including ANSI control sequences) to the exec'd
+	// command's own stdout/stderr before defaulting to "no" - this daemon
+	// streams that straight back to the caller, so it must never happen.
+	// Folding `ask` into `deny` up front gets the same safe outcome silently.
+	got := decodeSecurity(t, buildSecurityEnv(`{"allow":["aux4 version","aux4 pkger*"],"ask":["aux4 pkger*"]}`))
+	if len(got.Ask) != 0 {
+		t.Fatalf("expected no \"ask\" key in the rendered AUX4_SECURITY, got %v", got.Ask)
+	}
+	if !contains(got.Deny, "aux4 pkger*") {
+		t.Fatalf("expected the \"ask\" pattern to be folded into \"deny\", got deny=%v", got.Deny)
+	}
+}
+
+func TestBuildSecurityEnv_NeverEmitsAskKey(t *testing.T) {
+	raw := buildSecurityEnv(`{"allow":["aux4 version"],"ask":["aux4 pkger*"]}`)
+	if strings.Contains(raw, `"ask"`) {
+		t.Fatalf("expected the rendered AUX4_SECURITY to never contain an \"ask\" key, got %q", raw)
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func equalSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, s := range b {
+		if !contains(a, s) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestValidateArgs_AcceptsCleanArgs(t *testing.T) {
@@ -130,27 +164,77 @@ func TestValidateArgs_RejectsIrregularInternalWhitespace(t *testing.T) {
 // written to describe the equivalent, normally-spaced command.
 func TestValidateArgs_ClosesTheWhitespaceBypass(t *testing.T) {
 	args := []string{"todo ", "rm"}
-	cmdLine := strings.Join(args, " ")
-
-	policy := parseExpose(`{"allow":["todo *"],"deny":["todo rm*"]}`)
-	if !isExposed(policy, cmdLine) {
-		t.Fatalf("expected %q to document the underlying bug: the broad allow glob matches the double-spaced cmdLine while the more specific deny glob (single space) does not, so isExposed alone would let this through", cmdLine)
-	}
-
 	if err := validateArgs(args); err == nil {
-		t.Fatal("expected validateArgs to reject the whitespace-crafted args that evade the deny glob")
+		t.Fatal("expected validateArgs to reject the whitespace-crafted args that could evade a deny glob matched downstream")
 	}
 }
 
-func TestIsExposed_CmdLineHasNoAux4Prefix(t *testing.T) {
-	// Patterns are matched against msg.Args joined WITHOUT a leading "aux4" -
-	// this mirrors exactly what aux4 core matches AUX4_SECURITY against for the
-	// nested `aux4` invocation this daemon always runs.
-	p := parseExpose(`{"allow":["aux4 version"]}`)
-	if isExposed(p, "version") {
-		t.Fatal("pattern \"aux4 version\" should not match bare \"version\"")
+func TestParseAux4Version_ParsesStandardOutput(t *testing.T) {
+	v, ok := parseAux4Version("\n   aux4 5.2.10\n   2026 aux4. aux4 is created and maintained by the aux4 community.\n")
+	if !ok {
+		t.Fatal("expected to parse a version out of standard `aux4 aux4 version` output")
 	}
-	if !isExposed(p, "aux4 version") {
-		t.Fatal("pattern \"aux4 version\" should match a nested aux4 invocation's own args")
+	if v != [3]int{5, 2, 10} {
+		t.Fatalf("expected [5 2 10], got %v", v)
+	}
+}
+
+func TestParseAux4Version_RejectsUnrecognizedOutput(t *testing.T) {
+	if _, ok := parseAux4Version("not a version string"); ok {
+		t.Fatal("expected unrecognized output to fail to parse")
+	}
+}
+
+func TestCheckAux4SecuritySupported_AcceptsAtOrAboveMinimum(t *testing.T) {
+	stubAux4Version(t, "   aux4 5.2.9")
+	if err := checkAux4SecuritySupported(); err != nil {
+		t.Fatalf("expected the minimum supported version to pass, got %v", err)
+	}
+
+	stubAux4Version(t, "   aux4 5.3.0")
+	if err := checkAux4SecuritySupported(); err != nil {
+		t.Fatalf("expected a newer version to pass, got %v", err)
+	}
+}
+
+func TestCheckAux4SecuritySupported_RejectsOlderVersion(t *testing.T) {
+	// A local aux4 older than this daemon's minimum would silently ignore
+	// AUX4_SECURITY and run every exec'd command unrestricted - the daemon
+	// must refuse to start rather than serve under a false sense of
+	// enforcement.
+	stubAux4Version(t, "   aux4 5.2.8")
+	err := checkAux4SecuritySupported()
+	if err == nil {
+		t.Fatal("expected an older-than-minimum aux4 version to be rejected")
+	}
+	if !strings.Contains(err.Error(), "5.2.8") || !strings.Contains(err.Error(), "5.2.9") {
+		t.Fatalf("expected the error to name both the found and required versions, got %q", err.Error())
+	}
+}
+
+func TestCheckAux4SecuritySupported_RejectsUnparsableVersion(t *testing.T) {
+	// Fails closed: if the version can't be determined at all, that is NOT
+	// treated as "assume it's fine".
+	stubAux4Version(t, "not a version string")
+	if err := checkAux4SecuritySupported(); err == nil {
+		t.Fatal("expected unparsable version output to be rejected, not assumed supported")
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	cases := []struct {
+		a, b [3]int
+		want int
+	}{
+		{[3]int{5, 2, 9}, [3]int{5, 2, 9}, 0},
+		{[3]int{5, 2, 8}, [3]int{5, 2, 9}, -1},
+		{[3]int{5, 2, 10}, [3]int{5, 2, 9}, 1},
+		{[3]int{5, 1, 99}, [3]int{5, 2, 0}, -1},
+		{[3]int{6, 0, 0}, [3]int{5, 2, 9}, 1},
+	}
+	for _, c := range cases {
+		if got := compareVersions(c.a, c.b); got != c.want {
+			t.Fatalf("compareVersions(%v, %v) = %d, want %d", c.a, c.b, got, c.want)
+		}
 	}
 }

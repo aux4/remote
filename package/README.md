@@ -152,42 +152,76 @@ command, when the command never actually ran:
 |------|---------|
 | `0`–`125` | The remote `aux4` command's own exit code, passed through unchanged (`0` is success). |
 | `124` | The command exceeded its execution deadline (10 minutes by default, `AUX4_REMOTE_EXEC_TIMEOUT`) and was killed. |
-| `126` | The command was denied by the target machine's `expose` policy (or the exec's arguments were rejected outright — see Security Notes). |
-| `127` | The remote `aux4` itself reported "command not found" for the given arguments — the same code a shell uses for an unresolvable command. |
+| `126` | The exec's own arguments were rejected outright before anything ran (crafted/irregular whitespace — see Security Notes). This is the only case `aux4/remote` itself denies; everything else is decided by the remote `aux4` process. |
+| `127` | The remote `aux4` itself reported "command not found" — either the arguments don't resolve to a real command, **or** the target machine's `expose` policy does not permit it (aux4 core enforces `expose` via `AUX4_SECURITY` and reports a denied command the same way as a nonexistent one — see Exposure Policy). |
 | `1` | A local or relay-side failure before the command ever ran: the relay is unreachable, the access token is invalid, or the target machine is offline. |
 
 ## Exposure Policy (`expose`)
 
-Every machine decides for itself which aux4 commands it will run. The `expose` config is matched
-against the aux4 command line the caller sent — the arguments after the machine name, space-joined,
-without a leading `aux4` (e.g. `"todo list"` or `"aux4 version"`) — using the same `allow` / `ask` /
-`deny` glob semantics as aux4 core's command-exposure policy — the most specific matching pattern wins,
-and on a tie `deny` beats `ask` beats `allow`.
+Every machine decides for itself which aux4 commands it will run — but it does not evaluate that
+decision itself. The daemon renders the `expose` config straight into aux4 core's own `AUX4_SECURITY`
+environment variable and sets it on every `aux4` process it execs; **aux4 core is what actually allows
+or denies the command**, using its own `allow`/`ask`/`deny` glob semantics (most-specific pattern wins,
+and on a tie `deny` beats `ask` beats `allow`) against the exact command line the caller sent — the
+arguments after the machine name, space-joined, without a leading `aux4` (e.g. `"todo list"` or `"aux4
+version"`).
 
-Two rules specific to `aux4/remote`:
+**This requires aux4 core >= 5.2.9** (the first version to enforce `AUX4_SECURITY` at all). The daemon
+checks the local `aux4` version at startup and refuses to connect if it is older — an older `aux4` would
+silently ignore the policy and run every command unrestricted, which `aux4/remote` will not risk.
 
-- **Fail closed.** An empty or missing `expose.allow` list means the machine runs nothing at all —
-  there is no "allow everything" default here, unlike aux4 core's own policy.
-- **`ask` is `deny`.** The daemon runs unattended with nobody to answer a prompt, so any command that
-  would otherwise prompt for confirmation is refused instead.
+Two rules specific to `aux4/remote`, applied when the daemon renders `expose` into `AUX4_SECURITY`:
 
-A denied command never spawns a process; the caller gets a non-zero exit code and an error message
-explaining the command was not permitted.
+- **Fail closed.** An empty or missing `expose.allow` list is rendered as an explicit `{"deny":["*"]}` —
+  the machine runs nothing at all. Left as an empty `allow` list, aux4 core would read that as its own
+  default ("nothing has been restricted" — allow everything), the opposite of what `aux4/remote` means
+  by an `expose` policy with nothing in it.
+- **`ask` is `deny`.** The daemon runs unattended with nobody to answer a confirmation prompt, so every
+  `ask` pattern is folded into `deny` before being sent — this also avoids aux4 core writing an
+  interactive prompt (ANSI control sequences included) to the command's own stdout/stderr, which would
+  otherwise land in the caller's output stream.
 
-The machine also sets `AUX4_SECURITY` in the executed `aux4` process's environment to the same `allow`/
-`ask`/`deny` patterns, so aux4 core enforces the identical policy one level down as defense in depth —
-even if the machine's own policy check were ever bypassed, the `aux4` process itself would still refuse
-the command.
+A denied command is reported by the remote `aux4` process itself as "command not found" (exit `127`),
+the same as a genuinely nonexistent command — see Exit Codes above.
 
 **Credential isolation**: the executed `aux4` process never inherits this daemon's own
 `AUX4_ACCESS_TOKEN`, `AUX4_REFRESH_TOKEN`, or `AUX4_ID_TOKEN` — those are stripped from its environment
 before it starts, regardless of how this machine itself authenticated. A command run on a caller's
-behalf has no way to read or forward this machine's own aux4 credentials.
+behalf has no way to read or forward this machine's own aux4 credentials. `AUX4_SECURITY` is always set
+*last*, after the stripped environment, so it is never shadowed by anything inherited from this
+daemon's own process (including, defensively, an `AUX4_SECURITY` that may already be present there).
 
 **Reconnect**: if the relay connection drops, the daemon retries with exponential backoff (2s doubling
 to a 60s cap, with jitter), resetting after a successful reconnect. A handshake rejected outright with
 401/403 is treated as permanent — the daemon exits instead of retrying a token that will not become
 valid on its own.
+
+### Discovery (`aux4 remote <machine> aux4`)
+
+`aux4 remote <machine> aux4` — the bare `aux4` call, no further arguments — runs the nested `aux4 aux4`
+command listing, which aux4 core filters by the same `AUX4_SECURITY` policy as any other command. A
+caller never needs a dedicated discovery command or a special `allow` entry for the bare call itself:
+aux4 core's own policy evaluation treats any `allow` pattern that reaches a descendant (e.g. `"aux4
+version"`) as also making the `aux4` group itself reachable, so the listing naturally shows exactly the
+subcommands that pattern allows:
+
+```bash
+aux4 remote build-box aux4 --server wss://relay.example.com/ws
+```
+
+```text
+version
+Display the version of aux4.
+```
+
+Two edge cases, both handled by aux4 core itself rather than anything special-cased in `aux4/remote`:
+
+- `expose` has **no `allow` entries at all** (or is empty/missing) — rendered as the fail-closed
+  `{"deny":["*"]}` described above. The `aux4` group itself is unreachable, same as any other denied
+  command: exit `127`, "Command not found: aux4".
+- `expose.allow` has entries, but **none of them resolve to an actual subcommand** under `aux4` (for
+  example `allow: ["aux4"]` by itself, which matches the group but nothing inside it) — the group is
+  still reachable, so the listing runs; it is just empty. Exit `0`, no output.
 
 ## Management Commands
 
@@ -232,6 +266,10 @@ aux4 aux4 remote list --server <url>                                 # list mach
 - **`--security` cannot be forwarded to the remote command.** [Flag forwarding](#flag-forwarding) never
   sends a `security`/`no-security` flag (or any dot-notation `security.*` value) to the remote machine —
   a caller cannot use it to override the target machine's own `expose`-derived `AUX4_SECURITY` policy.
+- **The `expose` policy is enforced by aux4 core, not re-implemented by this daemon**, and only aux4
+  core >= 5.2.9 does that enforcement at all. `aux4 aux4 remote connect`/the daemon it starts refuses to
+  run against an older local `aux4`, rather than silently connecting a machine whose `expose` policy
+  would never actually be checked.
 - `aux4 aux4 remote connect` validates the machine `name` (letters, digits, `.`, `_`, `-` only — no `..`
   and no path separator) before touching the filesystem, creates its `dataDir` as `0700`, and writes the
   pid/log files as `0600`, so another local user cannot read command output or tamper with the

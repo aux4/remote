@@ -117,7 +117,18 @@ func runClient(name, serverURL, exposeJSON string) {
 		os.Exit(1)
 	}
 
-	policy := parseExpose(exposeJSON)
+	// AUX4_SECURITY enforcement is only honored by aux4 core >= 5.2.9 (see
+	// checkAux4SecuritySupported). An older local `aux4` binary would
+	// silently ignore the env var this daemon depends on to enforce the
+	// `expose` policy and run every command unrestricted, so this is checked
+	// once up front and the daemon refuses to start at all rather than serve
+	// under a false sense of enforcement.
+	if err := checkAux4SecuritySupported(); err != nil {
+		fmt.Fprintf(os.Stderr, "remote: %v\n", err)
+		os.Exit(1)
+	}
+
+	security := buildSecurityEnv(exposeJSON)
 	wsURL, err := buildWSURL(serverURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote: %v\n", err)
@@ -153,7 +164,7 @@ func runClient(name, serverURL, exposeJSON string) {
 		attempt = 0
 
 		fmt.Printf("remote: connected to %s as %q\n", wsURL, name)
-		serveMachine(conn, policy)
+		serveMachine(conn, security)
 		fmt.Fprintln(os.Stderr, "remote: disconnected, reconnecting...")
 		attempt++
 		time.Sleep(reconnectDelay(attempt))
@@ -185,7 +196,7 @@ func dialMachine(name, serverURL, token string) (*websocket.Conn, error) {
 // serveMachine reads messages off conn until the connection breaks. It
 // returns when the connection is no longer usable so the caller can
 // reconnect.
-func serveMachine(conn *websocket.Conn, policy *exposePolicy) {
+func serveMachine(conn *websocket.Conn, security string) {
 	defer conn.Close()
 	// A malicious or buggy relay should not be able to force unbounded memory
 	// growth by sending an oversized frame.
@@ -234,7 +245,7 @@ func serveMachine(conn *websocket.Conn, policy *exposePolicy) {
 		case sem <- struct{}{}:
 			go func(m execMessage) {
 				defer func() { <-sem }()
-				runExec(conn, &writeMu, policy, done, m)
+				runExec(conn, &writeMu, security, done, m)
 			}(msg)
 		default:
 			// At capacity - reject immediately rather than queue, so the
@@ -247,7 +258,7 @@ func serveMachine(conn *websocket.Conn, policy *exposePolicy) {
 	}
 }
 
-func runExec(conn *websocket.Conn, writeMu *sync.Mutex, policy *exposePolicy, connDone <-chan struct{}, msg execMessage) {
+func runExec(conn *websocket.Conn, writeMu *sync.Mutex, security string, connDone <-chan struct{}, msg execMessage) {
 	// The relay routes a machine's "output"/"exit" replies straight back to
 	// the caller's connectionId rather than tracking a pending-exec entry of
 	// its own; it gets that connectionId by trusting it echoed back exactly
@@ -268,15 +279,12 @@ func runExec(conn *websocket.Conn, writeMu *sync.Mutex, policy *exposePolicy, co
 	// to the same argv - this closes a bypass where crafted whitespace (a
 	// trailing space, an empty element, doubled internal whitespace) makes
 	// the string used for policy matching diverge from what the argv the
-	// policy was written to describe actually means. See validateArgs.
+	// nested aux4's own AUX4_SECURITY policy was written to describe actually
+	// means. See validateArgs. This is the only pre-exec rejection this
+	// daemon makes itself - the machine's `expose` policy is enforced by the
+	// nested `aux4` process below via AUX4_SECURITY, not re-implemented here.
 	if err := validateArgs(msg.Args); err != nil {
 		send(execMessage{Action: "exit", ID: msg.ID, Code: 126, Error: err.Error()})
-		return
-	}
-
-	cmdLine := strings.Join(msg.Args, " ")
-	if !isExposed(policy, cmdLine) {
-		send(execMessage{Action: "exit", ID: msg.ID, Code: 126, Error: fmt.Sprintf("aux4 command %q is not permitted by this machine's expose policy", cmdLine)})
 		return
 	}
 
@@ -308,9 +316,15 @@ func runExec(conn *websocket.Conn, writeMu *sync.Mutex, policy *exposePolicy, co
 	// this process's environment is NOT otherwise secret-free (accessToken()
 	// reads AUX4_ACCESS_TOKEN, and a machine that authenticates by other means
 	// may have other token-shaped vars set). AUX4_SECURITY is explicitly
-	// re-added after stripping since the command's own policy enforcement
-	// depends on it.
-	cmd.Env = append(filteredEnviron(), "AUX4_SECURITY="+toAux4Security(policy))
+	// re-added after stripping, set to exactly this machine's own `expose`
+	// policy (see buildSecurityEnv) - this is the enforcement point for what
+	// the command is allowed to do, since this daemon no longer pre-checks
+	// msg.Args against the policy itself. It is appended last specifically so
+	// it always wins over anything of the same name already present in this
+	// process's own environment, closing off any path where an operator's
+	// ambient AUX4_SECURITY could leak through and override the machine's
+	// configured policy.
+	cmd.Env = append(filteredEnviron(), "AUX4_SECURITY="+security)
 	// Run the child in its own process group and kill the whole group (not
 	// just the direct child) on timeout or disconnect, so anything the aux4
 	// command itself spawned is also torn down - never left running

@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -163,8 +164,12 @@ func TestForwardedFlags_PolicyMatchSeesOnlyTheCommandLine(t *testing.T) {
 		t.Fatalf("expected the policy-matched command line to be exactly \"aux4 version\", got %q", cmdLine)
 	}
 
-	policy := parseExpose(`{"allow":["aux4 version"]}`)
-	if !isExposed(policy, cmdLine) {
-		t.Fatal("expected \"aux4 version\" to still be allowed once runtime-injected params are stripped")
+	// The nested aux4 process (not this daemon) is what actually evaluates
+	// this command line against the policy - confirm the exact pattern this
+	// argv needs to match is what reaches AUX4_SECURITY unchanged, with
+	// nothing from the runtime-injected params altering it.
+	security := buildSecurityEnv(`{"allow":["aux4 version"]}`)
+	if !strings.Contains(security, `"aux4 version"`) {
+		t.Fatalf("expected AUX4_SECURITY to carry the exact pattern \"aux4 version\", got %q", security)
 	}
 }

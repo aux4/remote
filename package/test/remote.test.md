@@ -3,8 +3,13 @@
 Exercises the full relay flow in one scenario — relay server, two machine connections, an allowed
 exec, a denied exec, an offline machine, cross-principal isolation, and disconnect — since each
 command only makes sense with the others already running. Requires `aux4/cloud-remote` to be
-installed locally (the relay server lives in that companion package). Authentication is aux4 SSO
-(`AUX4_ACCESS_TOKEN`); a fake local SSO stands in for a real login.
+installed locally (the relay server lives in that companion package), and a local `aux4` >= 5.2.9
+(the daemon refuses to start against anything older — see `aux4 remote` README/man for why).
+Authentication is aux4 SSO (`AUX4_ACCESS_TOKEN`); a fake local SSO stands in for a real login.
+
+The machine's own `expose` policy is enforced by aux4 core itself (via `AUX4_SECURITY`), not by this
+daemon — a denied command is reported by the nested `aux4` process as "Command not found" (exit
+`127`), the same as a genuinely nonexistent one.
 
 A machine only ever runs `aux4 <args>` — never an arbitrary binary. Every command exercised below is
 a real aux4 command (`aux4 aux4 version`, etc); `echo hi` appears once, deliberately, to prove that
@@ -51,13 +56,19 @@ config:
         - "aux4 version"
       ask:
         - "aux4 pkger*"
+  machine-bare-allow:
+    name: machine-bare-allow
+    server: ws://127.0.0.1:18921/ws
+    expose:
+      allow:
+        - "aux4"
 ```
 
 ```file:sso-mock.js
 // Tiny fake SSO: GET /userinfo accepts "Bearer token-a" -> user-a and
 // "Bearer token-b" -> user-b; anything else is 401.
 const http = require("http");
-const USERS = { "token-a": { sub: "user-a", email: "a@example.com" }, "token-b": { sub: "user-b", email: "b@example.com" } };
+const USERS = { "token-a": { sub: "user-a", email: "a@example.com", scopes: ["aux4"] }, "token-b": { sub: "user-b", email: "b@example.com", scopes: ["aux4"] } };
 const server = http.createServer((req, res) => {
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
@@ -78,10 +89,11 @@ AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-a --dataDir
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-broad-deny --dataDir ./.data-broad-deny 2>/dev/null
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-empty-expose --dataDir ./.data-empty-expose 2>/dev/null
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-ask --dataDir ./.data-ask 2>/dev/null
+AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-bare-allow --dataDir ./.data-bare-allow 2>/dev/null
 aux4 api stop 2>/dev/null
 pkill -f "aux4-remote client" 2>/dev/null
 pkill -f sso-mock.js 2>/dev/null
-rm -rf .aux4-cloud-remote .data-a .data-broad-deny .data-empty-expose .data-ask server.log sso-mock.log
+rm -rf .aux4-cloud-remote .data-a .data-broad-deny .data-empty-expose .data-ask .data-bare-allow server.log sso-mock.log
 true
 ```
 
@@ -96,7 +108,7 @@ true
 ```execute
 nohup node sso-mock.js >sso-mock.log 2>&1 &
 sleep 1
-nohup aux4 aux4 cloud-remote server start --configFile server-config.yaml --config relay --ssoUrl http://127.0.0.1:18928 >server.log 2>&1 &
+nohup aux4 aux4 cloud-remote server start --configFile server-config.yaml --config relay --ssoUrl http://127.0.0.1:18928 --scope aux4 >server.log 2>&1 &
 for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18921/ && break; sleep 0.25; done
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18921/
 ```
@@ -177,6 +189,26 @@ AUX4_ACCESS_TOKEN=token-a aux4 remote machine-a aux4 version --server ws://127.0
 aux4 *
 ```
 
+### should run the bare `aux4` discovery call and list only the allowed commands
+
+`aux4` (no further arguments) runs the nested `aux4 aux4` listing. machine-a's `expose.allow`
+(`"aux4 version*"`, `"aux4 pkger list*"`, `"echo hi"`) has no pattern naming the bare path `"aux4"`
+itself, but aux4 core's own policy evaluation makes the `aux4` group reachable anyway because it has
+descendants that match - the listing shows exactly the `version` and `pkger` entries this machine
+allows, nothing else.
+
+```timeout
+10000
+```
+
+```execute
+AUX4_ACCESS_TOKEN=token-a aux4 remote machine-a aux4 --server ws://127.0.0.1:18921/ws
+```
+
+```expect:regex
+(?=[\s\S]*version)(?=[\s\S]*pkger)[\s\S]*
+```
+
 ### should exit this local process with the remote command's exact exit code
 
 `aux4 aux4 version` succeeds, so the remote command's exit code (0) must be this local `aux4 remote`
@@ -252,7 +284,11 @@ echo "exit=$?"
 exit=127
 ```
 
-### should propagate the expose-policy denial exit code (126) exactly
+### should propagate the expose-policy denial exit code (127) exactly
+
+A command the policy does not permit is reported by the nested `aux4` process itself as "Command not
+found" - aux4 core enforces `expose` via `AUX4_SECURITY`, so a denied command and a genuinely
+nonexistent one are indistinguishable from the caller's side.
 
 ```timeout
 10000
@@ -264,7 +300,7 @@ echo "exit=$?"
 ```
 
 ```expect
-exit=126
+exit=127
 ```
 
 ### should forward an extra --flag to the remote aux4 command, same as aux4/cloud
@@ -327,7 +363,7 @@ AUX4_ACCESS_TOKEN=token-a aux4 remote --command "machine-a aux4 pkger uninstall 
 ```
 
 ```error:partial
-is not permitted
+Command not found: aux4
 ```
 
 ### should report an offline machine
@@ -398,6 +434,7 @@ is offline
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote connect --configFile policy-config.yaml --config machine-broad-deny --dataDir ./.data-broad-deny
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote connect --configFile policy-config.yaml --config machine-empty-expose --dataDir ./.data-empty-expose
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote connect --configFile policy-config.yaml --config machine-ask --dataDir ./.data-ask
+AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote connect --configFile policy-config.yaml --config machine-bare-allow --dataDir ./.data-bare-allow
 sleep 1
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote list --server ws://127.0.0.1:18921/ws
 ```
@@ -434,13 +471,13 @@ AUX4_ACCESS_TOKEN=token-a aux4 remote machine-broad-deny todo rm 1 --server ws:/
 ```
 
 ```error:partial
-is not permitted
+Command not found: todo
 ```
 
 ### should deny every command when the expose policy is empty
 
-An empty `expose` (no `allow`/`ask`/`deny` at all) fails closed: this machine runs nothing, even a
-command as harmless as `aux4 version`.
+An empty `expose` (no `allow`/`ask`/`deny` at all) is rendered as an explicit deny-all: this machine
+runs nothing, even a command as harmless as `aux4 version`.
 
 ```timeout
 10000
@@ -451,7 +488,24 @@ AUX4_ACCESS_TOKEN=token-a aux4 remote machine-empty-expose aux4 version --server
 ```
 
 ```error:partial
-is not permitted
+Command not found: aux4
+```
+
+### should deny bare `aux4` discovery too under an empty expose policy
+
+An empty `expose` denies the `aux4` group itself, same as every other command - there is nothing to
+discover.
+
+```timeout
+10000
+```
+
+```execute
+AUX4_ACCESS_TOKEN=token-a aux4 remote machine-empty-expose aux4 --server ws://127.0.0.1:18921/ws
+```
+
+```error:partial
+Command not found: aux4
 ```
 
 ### should allow a command matched by allow on the ask-configured machine
@@ -470,6 +524,9 @@ aux4 *
 
 ### should deny a command matched only by ask, since the daemon cannot prompt unattended
 
+`ask` entries are folded into `deny` before this machine ever connects (see security.go) - no
+confirmation prompt is ever attempted, and the command is refused outright.
+
 ```timeout
 10000
 ```
@@ -479,7 +536,25 @@ AUX4_ACCESS_TOKEN=token-a aux4 remote machine-ask aux4 pkger list --server ws://
 ```
 
 ```error:partial
-is not permitted
+Command not found: aux4
+```
+
+### should run the bare `aux4` discovery call with an empty listing when allow matches no subcommand
+
+`machine-bare-allow`'s only `allow` entry is `"aux4"` itself, which matches no actual subcommand - the
+`aux4` group is still reachable (so this does not error), but there is nothing underneath it to list.
+
+```timeout
+10000
+```
+
+```execute
+AUX4_ACCESS_TOKEN=token-a aux4 remote machine-bare-allow aux4 --server ws://127.0.0.1:18921/ws >/dev/null 2>&1
+echo "exit=$?"
+```
+
+```expect
+exit=0
 ```
 
 ### should disconnect the policy edge-case machines
@@ -492,10 +567,12 @@ is not permitted
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-broad-deny --dataDir ./.data-broad-deny
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-empty-expose --dataDir ./.data-empty-expose
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-ask --dataDir ./.data-ask
+AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-bare-allow --dataDir ./.data-bare-allow
 ```
 
 ```expect
 Disconnected 'machine-broad-deny'
 Disconnected 'machine-empty-expose'
 Disconnected 'machine-ask'
+Disconnected 'machine-bare-allow'
 ```

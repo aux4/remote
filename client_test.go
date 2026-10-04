@@ -46,6 +46,35 @@ func stubAux4(t *testing.T, sentinel string) {
 	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
 }
 
+// stubAux4RecordingSecurity puts a fake "aux4" on PATH that, in addition to
+// behaving like stubAux4, writes the AUX4_SECURITY value it was invoked with
+// to securityFile - this daemon no longer evaluates the `expose` policy
+// itself (see security.go), so the only thing left to verify at this layer is
+// that the exact, correctly fixed-up AUX4_SECURITY value actually reaches the
+// child's environment; real allow/deny enforcement is aux4 core's own job.
+func stubAux4RecordingSecurity(t *testing.T, sentinel, securityFile string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script is POSIX shell only")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "aux4")
+	content := "#!/bin/sh\n" +
+		"echo \"ran\" >> " + sentinel + "\n" +
+		"printf '%s' \"$AUX4_SECURITY\" > " + securityFile + "\n" +
+		"printf 'stub-aux4-called:'\n" +
+		"for a in \"$@\"; do printf ' %s' \"$a\"; done\n" +
+		"printf '\\n'\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+}
+
 // wsPair spins up a local websocket echo-ish test server and returns a client
 // connection to it, along with the server-side connection so a test can read
 // what runExec writes back. Only one side writes in these tests (runExec).
@@ -110,7 +139,7 @@ func TestRunExec_AlwaysInvokesAux4RegardlessOfRequestedBinary(t *testing.T) {
 	stubAux4(t, sentinel)
 
 	clientConn, serverConn := wsPair(t)
-	policy := parseExpose(`{"allow":["echo hi"]}`)
+	security := buildSecurityEnv(`{"allow":["echo hi"]}`)
 
 	var writeMu sync.Mutex
 	msg := execMessage{Action: "exec", ID: "t1", Args: []string{"echo", "hi"}}
@@ -118,7 +147,7 @@ func TestRunExec_AlwaysInvokesAux4RegardlessOfRequestedBinary(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 
@@ -145,13 +174,20 @@ func TestRunExec_AlwaysInvokesAux4RegardlessOfRequestedBinary(t *testing.T) {
 	}
 }
 
-func TestRunExec_DeniedCommandNeverSpawnsAnything(t *testing.T) {
+// TestRunExec_EmptyAllowReachesChildAsDenyAll proves this daemon no longer
+// pre-evaluates the `expose` policy itself (that enforcement now happens one
+// level down, inside the nested `aux4` process via AUX4_SECURITY - see
+// security.go) - it always execs, and what reaches the child's environment
+// for a policy with no allow patterns is an explicit deny-all, never an empty
+// allow list that aux4 core's own default would read as unrestricted.
+func TestRunExec_EmptyAllowReachesChildAsDenyAll(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "ran.log")
-	stubAux4(t, sentinel)
+	securityFile := filepath.Join(t.TempDir(), "security.json")
+	stubAux4RecordingSecurity(t, sentinel, securityFile)
 
 	clientConn, serverConn := wsPair(t)
 	// No allow patterns at all - fail closed.
-	policy := parseExpose(`{}`)
+	security := buildSecurityEnv(`{}`)
 
 	var writeMu sync.Mutex
 	msg := execMessage{Action: "exec", ID: "t2", Args: []string{"todo", "rm", "1"}}
@@ -159,7 +195,7 @@ func TestRunExec_DeniedCommandNeverSpawnsAnything(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 
@@ -167,15 +203,16 @@ func TestRunExec_DeniedCommandNeverSpawnsAnything(t *testing.T) {
 	<-done
 
 	last := msgs[len(msgs)-1]
-	if last.Action != "exit" || last.Code != 126 {
-		t.Fatalf("expected a denied exec to exit with code 126, got %+v", last)
-	}
-	if !strings.Contains(last.Error, `aux4 command "todo rm 1" is not permitted`) {
-		t.Fatalf("unexpected denial message: %q", last.Error)
+	if last.Action != "exit" || last.Code != 0 {
+		t.Fatalf("expected the stub (which does not itself enforce anything) to run and exit 0, got %+v", last)
 	}
 
-	if _, err := os.ReadFile(sentinel); err == nil {
-		t.Fatal("expected the stub aux4 binary never to have run for a denied command")
+	got, err := os.ReadFile(securityFile)
+	if err != nil {
+		t.Fatalf("expected the stub to have recorded the AUX4_SECURITY it saw: %v", err)
+	}
+	if string(got) != `{"deny":["*"]}` {
+		t.Fatalf(`expected AUX4_SECURITY to be the explicit deny-all {"deny":["*"]}, got %q`, string(got))
 	}
 }
 
@@ -229,7 +266,7 @@ func TestBuildWSURL_UnsupportedScheme(t *testing.T) {
 
 func TestRunExec_EmptyArgsRejected(t *testing.T) {
 	clientConn, serverConn := wsPair(t)
-	policy := parseExpose(`{"allow":["*"]}`)
+	security := buildSecurityEnv(`{"allow":["*"]}`)
 
 	var writeMu sync.Mutex
 	msg := execMessage{Action: "exec", ID: "t3", Args: nil}
@@ -237,7 +274,7 @@ func TestRunExec_EmptyArgsRejected(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 
@@ -261,7 +298,7 @@ func TestRunExec_WhitespaceBypassIsRejected(t *testing.T) {
 	stubAux4(t, sentinel)
 
 	clientConn, serverConn := wsPair(t)
-	policy := parseExpose(`{"allow":["todo *"],"deny":["todo rm*"]}`)
+	security := buildSecurityEnv(`{"allow":["todo *"],"deny":["todo rm*"]}`)
 	connDone := make(chan struct{})
 
 	var writeMu sync.Mutex
@@ -269,7 +306,7 @@ func TestRunExec_WhitespaceBypassIsRejected(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 
@@ -304,9 +341,9 @@ func TestServeMachine_RejectsExecsBeyondConcurrencyCap(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
 
 	daemonConn, relayConn := wsPair(t)
-	policy := parseExpose(`{"allow":["*"]}`)
+	security := buildSecurityEnv(`{"allow":["*"]}`)
 
-	go serveMachine(daemonConn, policy)
+	go serveMachine(daemonConn, security)
 
 	for i := 0; i < maxConcurrentExecs+1; i++ {
 		msg := execMessage{Action: "exec", ID: fmt.Sprintf("flood-%d", i), Args: []string{"sleep"}}
@@ -363,7 +400,7 @@ func TestRunExec_TimesOutAndKillsTheChild(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
 
 	clientConn, serverConn := wsPair(t)
-	policy := parseExpose(`{"allow":["*"]}`)
+	security := buildSecurityEnv(`{"allow":["*"]}`)
 	connDone := make(chan struct{})
 
 	var writeMu sync.Mutex
@@ -371,7 +408,7 @@ func TestRunExec_TimesOutAndKillsTheChild(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 
@@ -422,7 +459,7 @@ func TestRunExec_TagsStdoutAndStderrSeparatelyAndPropagatesExitCode(t *testing.T
 	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
 
 	clientConn, serverConn := wsPair(t)
-	policy := parseExpose(`{"allow":["*"]}`)
+	security := buildSecurityEnv(`{"allow":["*"]}`)
 	connDone := make(chan struct{})
 
 	var writeMu sync.Mutex
@@ -430,7 +467,7 @@ func TestRunExec_TagsStdoutAndStderrSeparatelyAndPropagatesExitCode(t *testing.T
 
 	done := make(chan struct{})
 	go func() {
-		runExec(clientConn, &writeMu, policy, connDone, msg)
+		runExec(clientConn, &writeMu, security, connDone, msg)
 		close(done)
 	}()
 

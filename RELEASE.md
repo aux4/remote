@@ -1,5 +1,41 @@
 # Release Notes
 
+## 0.3.5
+
+- **The `expose` policy is now enforced by aux4 core itself, not re-implemented in this daemon.**
+  The daemon used to carry a second glob-based allow/ask/deny evaluator (security.go) that had to be
+  kept in sync with aux4 core's own command-exposure policy by hand - a source of drift risk (and the
+  exact mechanism that made `aux4 remote <machine> aux4` behave inconsistently: the daemon's own
+  pre-check and aux4 core's listing filter could reach different answers about the same policy). That
+  evaluator is gone; the daemon now renders the machine's `expose` config straight into aux4 core's
+  own `AUX4_SECURITY` environment variable and always execs through it, letting core make every
+  allow/deny decision. Two corrections are still applied when rendering `expose` into `AUX4_SECURITY`,
+  to keep `aux4/remote`'s fail-closed convention despite aux4 core's looser defaults: an empty or
+  missing `allow` list renders as an explicit `{"deny":["*"]}` (core's own default for "no allow
+  patterns" is "allow everything", the opposite of what this means here), and every `ask` pattern is
+  folded into `deny` (the daemon is unattended, and an unanswered `ask` prompt would otherwise write
+  ANSI confirmation-prompt noise into the command's own output stream before defaulting to "no"
+  anyway).
+- **`aux4 remote <machine> aux4` (bare discovery, no further arguments) now works correctly for free.**
+  Previously the daemon special-cased this call to always bypass its own policy check, which then hit
+  a second bug: aux4 core's own default for an empty `allow` list (used for "deny everything" expose
+  configs) is "allow everything", so a machine configured to expose *nothing* could leak its *entire*
+  unfiltered command listing through discovery. With enforcement now fully delegated to core, the
+  listing comes back correctly filtered by whatever the policy actually allows - no special-casing
+  needed, and no leak: a pattern that reaches a descendant (e.g. `"aux4 version"`) naturally makes the
+  `aux4` group itself reachable too, exactly like a normal aux4 install under `AUX4_SECURITY`.
+- **Version guard: refuses to start against a local aux4 older than 5.2.9.** `AUX4_SECURITY`
+  enforcement only exists in aux4 core from that version onward - an older binary on PATH would
+  silently ignore it and run every exec'd command unrestricted. `aux4 aux4 remote connect` and the
+  daemon it starts now check the local `aux4` version first and refuse to run (with a clear error)
+  against anything older, rather than connect a machine whose `expose` policy would never actually be
+  checked.
+- **Exit codes changed for denied/hidden commands.** A command the `expose` policy does not permit is
+  now reported by the nested `aux4` process itself as "Command not found" (exit `127`), the same as a
+  genuinely nonexistent command, since enforcement is now entirely aux4 core's. Exit `126` is reserved
+  for the one thing this daemon still rejects itself: an exec whose arguments have the
+  crafted-whitespace shape `validateArgs` exists to catch.
+
 ## 0.3.4
 
 - **Security fix: the daemon no longer hands its own aux4 credentials to commands it runs

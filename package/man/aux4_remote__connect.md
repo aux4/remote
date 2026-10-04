@@ -33,11 +33,30 @@ refresh), and reconnects automatically if the connection drops, fetching a fresh
   only ever needs to describe aux4 command lines. It is a JSON object with `allow`/`ask`/`deny` glob
   pattern arrays, matched against the aux4 command line a caller sends: the arguments after the
   machine name, space-joined, *without* a leading `aux4` (e.g. `"todo list*"` or `"aux4 version"`).
-  An empty or missing `expose` (the default, `{}`) exposes **nothing** — this is fail-closed, unlike
-  aux4 core's own command-exposure policy. `ask` is treated the same as `deny`, since the daemon has
-  nobody to answer a confirmation prompt. The same patterns are also passed to the executed `aux4`
-  process as `AUX4_SECURITY`, so aux4 core enforces the identical policy one level down as defense in
-  depth.
+  **The daemon does not evaluate this policy itself** - it renders `expose` into aux4 core's own
+  `AUX4_SECURITY` environment variable and sets it on every `aux4` process it execs, last (after
+  stripping this daemon's own credentials), so it always wins over anything already present in that
+  process's environment; **aux4 core is what actually allows or denies the command**, using its own
+  `allow`/`ask`/`deny` glob evaluation (most-specific pattern wins, `deny` beats `ask` beats `allow` on
+  a tie). Two corrections are applied when rendering `expose` into `AUX4_SECURITY`, to keep
+  `aux4/remote`'s fail-closed convention intact despite aux4 core's own looser defaults: an empty or
+  missing `allow` list is rendered as an explicit `{"deny":["*"]}` (aux4 core's own default for an
+  empty `allow` list is "nothing restricted - allow everything", the opposite of what `aux4/remote`
+  means by that), and every `ask` pattern is folded into `deny` (the daemon is unattended, and letting
+  `ask` reach aux4 core would otherwise print an interactive confirmation prompt - ANSI control
+  sequences included - into the command's own output stream before it defaults to "no" anyway).
+- **Requires aux4 core >= 5.2.9.** `AUX4_SECURITY` enforcement only exists from that version onward; an
+  older `aux4` on PATH would silently ignore it and run every exec'd command unrestricted. This command
+  (and the daemon it starts) checks the local `aux4` version and refuses to run against an older one,
+  rather than connect a machine whose `expose` policy would never actually be checked.
+- **Discovery (`aux4 remote <machine> aux4`).** The bare `aux4` call - no further arguments - runs the
+  nested `aux4 aux4` command listing, filtered by this same `AUX4_SECURITY` the same way aux4 core
+  filters it for any locally restricted install: an `allow` pattern that reaches a descendant (e.g.
+  `"aux4 version"`) also makes the `aux4` group itself reachable, so the listing shows exactly the
+  subcommands that pattern allows - no dedicated discovery command or special `allow` entry needed. If
+  `expose` has no `allow` entries at all, the group is unreachable like anything else the policy denies
+  (exit `127`, "Command not found: aux4"); if it has entries but none resolve to an actual subcommand
+  (e.g. `allow: ["aux4"]` alone), the group is reachable but the listing is empty (exit `0`, no output).
 
 #### Usage
 
