@@ -1,5 +1,15 @@
 # Release Notes
 
+## 0.3.6
+
+- **CI only, no behavior change.** Fixed 3 test-environment bugs surfaced by this repo's first real
+  CI run (RMT-012, RMT-013): a `stat -f`/`-c` fallback that silently did the wrong thing on Linux, a
+  Linux-only `pkill -f` self-match that killed the test's own cleanup shell before it could finish
+  (GNU pkill matches a pattern against the full argv of every process, including the shell running
+  the pkill command itself), a missing `aux4/todo` test dependency in CI, and a darwin CI job blocked
+  by installing a dev-hub package's dependency chain from the dev hub instead of the prod hub where
+  it is current.
+
 ## 0.3.5
 
 - **The `expose` policy is now enforced by aux4 core itself, not re-implemented in this daemon.**
