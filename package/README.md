@@ -179,6 +179,16 @@ The machine also sets `AUX4_SECURITY` in the executed `aux4` process's environme
 even if the machine's own policy check were ever bypassed, the `aux4` process itself would still refuse
 the command.
 
+**Credential isolation**: the executed `aux4` process never inherits this daemon's own
+`AUX4_ACCESS_TOKEN`, `AUX4_REFRESH_TOKEN`, or `AUX4_ID_TOKEN` — those are stripped from its environment
+before it starts, regardless of how this machine itself authenticated. A command run on a caller's
+behalf has no way to read or forward this machine's own aux4 credentials.
+
+**Reconnect**: if the relay connection drops, the daemon retries with exponential backoff (2s doubling
+to a 60s cap, with jitter), resetting after a successful reconnect. A handshake rejected outright with
+401/403 is treated as permanent — the daemon exits instead of retrying a token that will not become
+valid on its own.
+
 ## Management Commands
 
 ```bash

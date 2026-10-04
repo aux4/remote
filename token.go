@@ -17,6 +17,48 @@ import (
 	"strings"
 )
 
+// tokenLikeEnvPrefixes names environment variables that must never reach a
+// command this daemon execs on a caller's behalf (runExec in client.go): this
+// process's own aux4 credentials, which a remote caller never supplied and
+// has no business inheriting just because its command happened to run here.
+// Prefix-matched (not exact) so a related var (AUX4_ACCESS_TOKEN_EXPIRY, a
+// future AUX4_REFRESH_TOKEN, etc.) is caught without needing its own entry.
+var tokenLikeEnvPrefixes = []string{
+	"AUX4_ACCESS_TOKEN",
+	"AUX4_REFRESH_TOKEN",
+	"AUX4_ID_TOKEN",
+}
+
+// filteredEnviron returns this process's own environment with every
+// token-like variable (see tokenLikeEnvPrefixes) removed - the starting point
+// for an exec'd command's env, which the caller then adds AUX4_SECURITY back
+// onto. AUX4_SECURITY itself is never in this list: the exec'd command needs
+// it to enforce its own nested policy.
+func filteredEnviron() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			name = kv[:idx]
+		}
+		if isTokenLikeEnvName(name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func isTokenLikeEnvName(name string) bool {
+	for _, prefix := range tokenLikeEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // accessToken resolves a current aux4 SSO access token. AUX4_ACCESS_TOKEN
 // wins outright when set (CI / explicit override, and avoids a subprocess on
 // a hot path like reconnect); otherwise it shells out to `aux4 aux4 token`,

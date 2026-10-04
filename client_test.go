@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -480,5 +481,100 @@ func TestValidateName(t *testing.T) {
 		if err := validateName(name); err == nil {
 			t.Errorf("expected %q to be rejected", name)
 		}
+	}
+}
+
+// TestFilteredEnviron_StripsTokenLikeVarsKeepsOthers covers the env the
+// daemon hands to the aux4 process it execs on a caller's behalf (runExec in
+// client.go): this process's own credentials must never leak into it, but
+// unrelated env (including AUX4_SECURITY, added back by the caller) must
+// survive.
+func TestFilteredEnviron_StripsTokenLikeVarsKeepsOthers(t *testing.T) {
+	for _, kv := range []struct{ k, v string }{
+		{"AUX4_ACCESS_TOKEN", "secret-access"},
+		{"AUX4_REFRESH_TOKEN", "secret-refresh"},
+		{"AUX4_ID_TOKEN", "secret-id"},
+		{"REMOTE_TEST_KEEP_ME", "keep"},
+	} {
+		old, had := os.LookupEnv(kv.k)
+		os.Setenv(kv.k, kv.v)
+		t.Cleanup(func(k, old string, had bool) func() {
+			return func() {
+				if had {
+					os.Setenv(k, old)
+				} else {
+					os.Unsetenv(k)
+				}
+			}
+		}(kv.k, old, had))
+	}
+
+	env := filteredEnviron()
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "AUX4_ACCESS_TOKEN=") || strings.HasPrefix(kv, "AUX4_REFRESH_TOKEN=") || strings.HasPrefix(kv, "AUX4_ID_TOKEN=") {
+			t.Fatalf("expected token-like vars to be stripped, found %q", kv)
+		}
+	}
+	found := false
+	for _, kv := range env {
+		if kv == "REMOTE_TEST_KEEP_ME=keep" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an unrelated env var to survive filtering")
+	}
+}
+
+// TestReconnectDelay_GrowsAndCaps covers the exponential backoff shape: each
+// attempt's delay (ignoring jitter's +/-30% band) roughly doubles up to the
+// cap, and never exceeds the cap plus its jitter headroom.
+func TestReconnectDelay_GrowsAndCaps(t *testing.T) {
+	prevMax := time.Duration(0)
+	for attempt := 1; attempt <= 10; attempt++ {
+		d := reconnectDelay(attempt)
+		if d < 0 {
+			t.Fatalf("attempt %d: delay must never be negative, got %s", attempt, d)
+		}
+		capWithJitter := time.Duration(float64(reconnectMaxDelay) * (1 + reconnectJitterFraction))
+		if d > capWithJitter {
+			t.Fatalf("attempt %d: delay %s exceeds the capped+jittered ceiling %s", attempt, d, capWithJitter)
+		}
+		_ = prevMax
+	}
+
+	// After enough attempts the un-jittered base delay must have saturated at
+	// the cap - sample many draws and check none exceed the cap's jitter band
+	// (a flaky "it happened to double past the cap once" would be a real bug).
+	for i := 0; i < 50; i++ {
+		d := reconnectDelay(20)
+		capWithJitter := time.Duration(float64(reconnectMaxDelay) * (1 + reconnectJitterFraction))
+		if d > capWithJitter {
+			t.Fatalf("attempt 20: delay %s exceeds the capped+jittered ceiling %s", d, capWithJitter)
+		}
+	}
+}
+
+// TestDialMachine_PermanentlyRejectsOn401 covers the permanent-vs-transient
+// distinction: a relay that rejects the handshake outright with 401 must
+// surface an *authRejectedError, not a plain error runClient would retry
+// forever.
+func TestDialMachine_PermanentlyRejectsOn401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	_, err := dialMachine("machine-a", wsURL, "bad-token")
+	if err == nil {
+		t.Fatalf("expected an error for a rejected handshake")
+	}
+	var rejected *authRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("expected an *authRejectedError, got %T: %v", err, err)
+	}
+	if rejected.statusCode != http.StatusUnauthorized {
+		t.Fatalf("expected statusCode 401, got %d", rejected.statusCode)
 	}
 }

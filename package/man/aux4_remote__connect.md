@@ -6,8 +6,21 @@ Connects this machine to a relay server so other machines can run commands on it
 
 The daemon dials the relay server, authenticates with `name` and your aux4 login (`AUX4_ACCESS_TOKEN`
 if set, else `aux4 aux4 token` — the same helper every aux4 CLI command uses, including its automatic
-refresh), and reconnects automatically (with a short backoff) if the connection drops, fetching a
-fresh token on every (re)connect attempt. It never accepts inbound connections itself.
+refresh), and reconnects automatically if the connection drops, fetching a fresh token on every
+(re)connect attempt. It never accepts inbound connections itself.
+
+- **Reconnect backoff**: a dropped connection is retried with exponential backoff (starting at 2s,
+  doubling up to a 60s cap, with up to ±30% random jitter so many machines reconnecting at once do
+  not hammer the relay in lockstep). The backoff resets to the start after a successful handshake, so
+  a machine that reconnects cleanly after a single drop is not penalized by earlier failures. If the
+  relay rejects the handshake outright with an authentication/authorization error (401/403 — a token
+  that will not become valid on its own), the daemon prints a clear error and exits non-zero instead
+  of retrying forever; a plain network failure (relay unreachable, DNS, timeout) still retries with
+  backoff.
+- **Credential isolation**: a command this machine runs on a caller's behalf never inherits this
+  daemon's own `AUX4_ACCESS_TOKEN`/`AUX4_REFRESH_TOKEN`/`AUX4_ID_TOKEN` — those are stripped from the
+  executed `aux4` process's environment before it starts, regardless of what environment this daemon
+  itself was started with.
 
 - **`name`** is this machine's name, unique among the machines registered under YOUR aux4 account (two
   different aux4 users can both use the same name without conflict) — the relay authenticates the

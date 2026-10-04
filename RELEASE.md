@@ -1,5 +1,25 @@
 # Release Notes
 
+## 0.3.4
+
+- **Security fix: the daemon no longer hands its own aux4 credentials to commands it runs
+  on a caller's behalf.** `runExec` used to build the exec'd `aux4` process's environment
+  from this daemon's own `os.Environ()` plus `AUX4_SECURITY` - if this process authenticated
+  via `AUX4_ACCESS_TOKEN` (or ends up with an `AUX4_REFRESH_TOKEN`/`AUX4_ID_TOKEN` set), that
+  credential was inherited by every command a remote caller asked it to run. Token-like
+  variables (`AUX4_ACCESS_TOKEN*`, `AUX4_REFRESH_TOKEN*`, `AUX4_ID_TOKEN*`) are now stripped
+  before exec; `AUX4_SECURITY` is unaffected since the exec'd command needs it for its own
+  nested policy enforcement.
+- **Reconnect now backs off exponentially with jitter** (2s doubling to a 60s cap, +/-30%
+  jitter) instead of a flat 3-5s retry - avoids hammering a relay that is down or
+  recovering, especially from many machines reconnecting at once. The backoff resets after
+  a successful handshake, so a machine that has been stable for a while reconnects quickly
+  again after a single drop.
+- **A handshake rejected outright with 401/403 is now treated as permanent**, not retried
+  forever: the daemon prints a clear error and exits non-zero instead of looping on a token
+  that cannot become valid on its own. A plain network failure (relay unreachable, DNS,
+  timeout) still retries with backoff as before.
+
 ## 0.3.3
 
 Correctness fixes so `aux4 remote <machine> <cmd>` behaves exactly like running `<cmd>`

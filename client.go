@@ -11,8 +11,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,6 +26,11 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// randFloat returns a pseudo-random float64 in [0, 1) for jittering the
+// reconnect backoff (reconnectDelay) - not security-sensitive, so the
+// default (unseeded, non-cryptographic) source is fine.
+func randFloat() float64 { return rand.Float64() }
 
 // maxConcurrentExecs bounds how many "exec" requests this machine runs at
 // once. Without a cap, a relay (or anyone who can reach it) could flood a
@@ -57,6 +64,53 @@ func execTimeout() time.Duration {
 // memory growth by sending an oversized message.
 const maxWSMessageBytes = 8 * 1024 * 1024
 
+// reconnectBaseDelay/reconnectMaxDelay/reconnectJitterFraction bound the
+// exponential backoff between reconnect attempts: doubling from the base
+// delay, capped at the max, with up to +/-jitterFraction randomization so a
+// relay recovering from an outage is not immediately hammered by every one of
+// its machines reconnecting in lockstep at the exact same moment.
+const (
+	reconnectBaseDelay      = 2 * time.Second
+	reconnectMaxDelay       = 60 * time.Second
+	reconnectJitterFraction = 0.3
+)
+
+// reconnectDelay returns the backoff delay for the given failed-attempt
+// count (1 = first failure), doubling from reconnectBaseDelay and capped at
+// reconnectMaxDelay, then jittered by +/-reconnectJitterFraction.
+func reconnectDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := reconnectBaseDelay
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= reconnectMaxDelay {
+			delay = reconnectMaxDelay
+			break
+		}
+	}
+	jitter := (randFloat()*2 - 1) * reconnectJitterFraction
+	jittered := time.Duration(float64(delay) * (1 + jitter))
+	if jittered < 0 {
+		jittered = 0
+	}
+	return jittered
+}
+
+// authRejectedError marks a connect failure as a PERMANENT authentication/
+// authorization rejection (e.g. the relay's handshake itself was rejected
+// with 401/403) rather than a transient network problem - runClient exits
+// instead of retrying forever against a token that will never become valid
+// on its own.
+type authRejectedError struct {
+	statusCode int
+}
+
+func (e *authRejectedError) Error() string {
+	return fmt.Sprintf("authentication rejected by relay (status %d)", e.statusCode)
+}
+
 func runClient(name, serverURL, exposeJSON string) {
 	if err := validateName(name); err != nil {
 		fmt.Fprintf(os.Stderr, "remote: %v\n", err)
@@ -70,38 +124,62 @@ func runClient(name, serverURL, exposeJSON string) {
 		os.Exit(1)
 	}
 
+	attempt := 0
 	for {
 		token, err := accessToken()
 		if err != nil {
+			attempt++
 			fmt.Fprintf(os.Stderr, "remote: %v, retrying...\n", err)
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectDelay(attempt))
 			continue
 		}
 
 		conn, err := dialMachine(name, wsURL, token)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "remote: connect failed: %v, retrying...\n", err)
-			time.Sleep(5 * time.Second)
+			var rejected *authRejectedError
+			if errors.As(err, &rejected) {
+				fmt.Fprintf(os.Stderr, "remote: %v - not retrying (this will not succeed without a different token)\n", err)
+				os.Exit(1)
+			}
+			attempt++
+			fmt.Fprintf(os.Stderr, "remote: connect failed: %v, retrying in %s...\n", err, reconnectDelay(attempt).Round(time.Second))
+			time.Sleep(reconnectDelay(attempt))
 			continue
 		}
+
+		// A successful handshake resets the backoff - a machine that has been
+		// stably connected for a while and drops once should retry quickly
+		// again, not keep paying for a run of past failures from hours ago.
+		attempt = 0
 
 		fmt.Printf("remote: connected to %s as %q\n", wsURL, name)
 		serveMachine(conn, policy)
 		fmt.Fprintln(os.Stderr, "remote: disconnected, reconnecting...")
-		time.Sleep(3 * time.Second)
+		attempt++
+		time.Sleep(reconnectDelay(attempt))
 	}
 }
 
 // dialMachine fetches a fresh access token for every (re)connect attempt, so
 // a long-lived daemon picks up a refreshed token automatically instead of
-// authenticating forever with the token it started with.
+// authenticating forever with the token it started with. A handshake
+// rejected outright with 401/403 (an auth proxy in front of the relay, or a
+// future protocol change that rejects before upgrading) is reported as an
+// *authRejectedError - a permanent condition runClient must not retry
+// forever against.
 func dialMachine(name, serverURL, token string) (*websocket.Conn, error) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
 	header.Set("X-Machine-Name", name)
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, _, err := dialer.Dial(serverURL, header)
-	return conn, err
+	conn, resp, err := dialer.Dial(serverURL, header)
+	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return nil, &authRejectedError{statusCode: resp.StatusCode}
+		}
+		return nil, err
+	}
+	return conn, nil
 }
 
 // serveMachine reads messages off conn until the connection breaks. It
@@ -224,7 +302,15 @@ func runExec(conn *websocket.Conn, writeMu *sync.Mutex, policy *exposePolicy, co
 	// directly. This makes it impossible to run anything other than an aux4
 	// command through this path, regardless of what the expose policy allows.
 	cmd := exec.CommandContext(ctx, "aux4", msg.Args...)
-	cmd.Env = append(os.Environ(), "AUX4_SECURITY="+toAux4Security(policy))
+	// Never hand this daemon's own aux4 credentials to the command it runs on
+	// a caller's behalf: msg.Args (and anything that command itself prints or
+	// forwards) is attacker-influenced input from the relay's perspective, and
+	// this process's environment is NOT otherwise secret-free (accessToken()
+	// reads AUX4_ACCESS_TOKEN, and a machine that authenticates by other means
+	// may have other token-shaped vars set). AUX4_SECURITY is explicitly
+	// re-added after stripping since the command's own policy enforcement
+	// depends on it.
+	cmd.Env = append(filteredEnviron(), "AUX4_SECURITY="+toAux4Security(policy))
 	// Run the child in its own process group and kill the whole group (not
 	// just the direct child) on timeout or disconnect, so anything the aux4
 	// command itself spawned is also torn down - never left running
