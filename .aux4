@@ -5,14 +5,18 @@
       "commands": [
         {
           "name": "build",
-          "execute": ["aux4 builder all"],
+          "execute": [
+            "aux4 builder all"
+          ],
           "help": {
             "text": "Build the app for all platforms"
           }
         },
         {
           "name": "builder",
-          "execute": ["profile:builder"],
+          "execute": [
+            "profile:builder"
+          ],
           "help": {
             "text": "Build the app"
           }
@@ -67,5 +71,6 @@
         }
       ]
     }
-  ]
+  ],
+  "version": "0.2.2"
 }

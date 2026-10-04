@@ -1,8 +1,8 @@
 {
   "scope": "aux4",
   "name": "remote",
-  "version": "0.2.0",
-  "description": "run aux4 (and shell) commands on another machine through an aux4/cloud-remote relay server",
+  "version": "0.3.3",
+  "description": "run aux4 commands (only aux4 commands - never arbitrary binaries) on another machine through an aux4/cloud-remote relay server",
   "license": "MIT",
   "dependencies": [
     "aux4/config"
@@ -21,25 +21,25 @@
         {
           "name": "remote",
           "execute": [
-            "${packageDir}/aux4-remote call-auto value(server) value(args*) value(command)"
+            "${packageDir}/aux4-remote call-auto value(server) value(args*) value(command) value(*)"
           ],
           "help": {
-            "text": "Run a command on a remote machine through the relay server, authenticated with your aux4 login",
+            "text": "Run an aux4 command on a remote machine through the relay server, authenticated with your aux4 login. Only aux4 commands can be run - the machine always executes `aux4 <args...>`, never an arbitrary binary. Any other --flag (e.g. --status) is forwarded to the remote command as its own --flag value, same as aux4/cloud",
             "variables": [
               {
                 "name": "args",
-                "text": "The target machine name followed by the command and its arguments (no single-dash flags; use --command for those)",
+                "text": "The target machine name followed by the arguments to pass to aux4 on that machine (no single-dash flags; use --command for those). E.g. \"build-box todo list\" runs `aux4 todo list` on build-box; \"build-box aux4 version\" runs `aux4 aux4 version`",
                 "arg": true,
                 "multiple": true
               },
               {
                 "name": "command",
-                "text": "Alternative to the positional form: \"<machine> <command and args>\" as one shell-quoted string, needed when the command has single-dash flags (e.g. --command \"build-box ls -la /tmp\")",
+                "text": "Alternative to the positional form: \"<machine> <aux4 args>\" as one shell-quoted string, needed when the command has single-dash flags (e.g. --command \"build-box aux4 pkger list -v\")",
                 "default": ""
               },
               {
                 "name": "server",
-                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+                "text": "Relay server websocket URL. wss:// (TLS) for anything but localhost; ws:// is only accepted when the host is loopback (localhost/127.0.0.1/::1), e.g. ws://127.0.0.1:8420/ws or wss://relay.example.com/ws"
               }
             ]
           }
@@ -66,26 +66,22 @@
         {
           "name": "connect",
           "execute": [
-            "mkdir -p ${dataDir}",
-            "set:logFile=${dataDir}/${name}.log",
-            "set:pidFile=${dataDir}/${name}.pid",
-            "nohup ${packageDir}/aux4-remote client values(name, server, expose) > value(logFile) 2>&1 & echo $! > value(pidFile)",
-            "log:Connecting value(name) to ${server} (logs: ${logFile})"
+            "${packageDir}/aux4-remote connect values(dataDir, name, server, expose)"
           ],
           "help": {
             "text": "Connect this machine to a relay server, exposing allowed commands. Authenticates with your aux4 login (run `aux4 aux4 login` first if needed)",
             "variables": [
               {
                 "name": "name",
-                "text": "This machine's name, as other machines will address it (unique per your aux4 account)"
+                "text": "This machine's name, as other machines will address it (unique per your aux4 account). Must match ^[A-Za-z0-9._-]+$ (letters, digits, '.', '_', '-' only)"
               },
               {
                 "name": "server",
-                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+                "text": "Relay server websocket URL. wss:// (TLS) for anything but localhost; ws:// is only accepted when the host is loopback (localhost/127.0.0.1/::1), e.g. ws://127.0.0.1:8420/ws or wss://relay.example.com/ws"
               },
               {
                 "name": "expose",
-                "text": "Allow/ask/deny glob patterns for commands this machine will run (JSON object). An empty/missing value exposes nothing",
+                "text": "Allow/ask/deny glob patterns matched against the aux4 command line this machine will run, e.g. \"todo list*\" or \"aux4 version\" (JSON object). An empty/missing value exposes nothing",
                 "default": "{}"
               },
               {
@@ -150,7 +146,7 @@
             "variables": [
               {
                 "name": "server",
-                "text": "Relay server websocket URL (e.g. ws://relay.example.com/ws)"
+                "text": "Relay server websocket URL. wss:// (TLS) for anything but localhost; ws:// is only accepted when the host is loopback (localhost/127.0.0.1/::1), e.g. ws://127.0.0.1:8420/ws or wss://relay.example.com/ws"
               }
             ]
           }

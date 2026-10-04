@@ -15,4 +15,11 @@ type execMessage struct {
 	Data   string   `json:"data,omitempty"`
 	Code   int      `json:"code,omitempty"`
 	Error  string   `json:"error,omitempty"`
+	// Token is this caller's bearer token, sent on every "hello"/"exec"/
+	// "list" message - the relay is stateless for callers and re-validates
+	// the token (deriving the principal from it) per message instead of
+	// looking the caller up by connectionId. Never sent by a machine.
+	Token string `json:"token,omitempty"`
+	// Machines is the reply payload for a "list" request.
+	Machines []string `json:"machines,omitempty"`
 }

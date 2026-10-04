@@ -4,3 +4,4 @@ package/*.zip
 aux4-remote
 .aux4-remote*
 .DS_Store
+remote

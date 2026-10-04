@@ -17,6 +17,16 @@ import (
 )
 
 const callTimeout = 120 * time.Second
+// exitGracePeriod absorbs ordinary arrival-order jitter between "output" and
+// "exit" (two independent messages, each pushed to the caller by its own
+// relay-side handler invocation - see cloud-remote's server.go package
+// comment). It does NOT need to cover a relay losing track of the exec
+// entirely: the relay deliberately keeps a completed exec's pending-record
+// around (rather than deleting it the moment "exit" is processed) so a
+// late-processed "output" can still be routed correctly however long it
+// takes - see the "exit" case in cloud-remote's handleMessage. This window
+// only needs to be long enough for an output push that's already in flight
+// to land.
 const exitGracePeriod = 400 * time.Millisecond
 
 // drainTrailingOutput reads any further messages for id that arrive within a
@@ -53,37 +63,58 @@ func drainTrailingOutput(conn *websocket.Conn, id string) {
 }
 
 func dialCaller(serverURL, token string) (*websocket.Conn, error) {
-	header := http.Header{}
-	header.Set("Authorization", "Bearer "+token)
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, _, err := dialer.Dial(buildWSURL(serverURL), header)
+	wsURL, err := buildWSURL(serverURL)
 	if err != nil {
 		return nil, err
 	}
-	if err := awaitReady(conn); err != nil {
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token)
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, header)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(maxWSMessageBytes)
+	if err := awaitReady(conn, token); err != nil {
 		conn.Close()
 		return nil, err
 	}
 	return conn, nil
 }
 
-// awaitReady blocks until the relay confirms its $connect handler has
-// finished validating this connection's token and committing it to the
-// registry. aux4/api completes the websocket handshake without waiting for
-// $connect to run, so without this a caller's exec/list sent immediately
-// after dialing can arrive before the relay even knows who it is, and get
-// silently dropped (never replied to) instead of an error.
-func awaitReady(conn *websocket.Conn) error {
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+// awaitReady blocks until the relay confirms token is valid. A caller is
+// stateless on the relay - "hello" carries the SAME bearer token sent on the
+// websocket handshake again in the message body, which the relay validates
+// per message instead of looking this connection up in its registry (a
+// $connect-written registration can land on a different concurrent relay
+// instance and never become visible to the message handler, which used to
+// make this poll for up to 8s and still often time out). The relay replies
+// "ready" on success or an "exit" carrying an error on an invalid token.
+func awaitReady(conn *websocket.Conn, token string) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := conn.WriteJSON(execMessage{Action: "hello", Token: token}); err != nil {
+		return fmt.Errorf("cannot reach relay server: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	_, data, err := conn.ReadMessage()
 	if err != nil {
 		return fmt.Errorf("no response from relay server: %w", err)
 	}
 	var msg execMessage
-	if err := json.Unmarshal(data, &msg); err != nil || msg.Action != "ready" {
+	if err := json.Unmarshal(data, &msg); err != nil {
 		return fmt.Errorf("unexpected response from relay server while connecting")
 	}
-	return nil
+	switch msg.Action {
+	case "ready":
+		return nil
+	case "exit":
+		if msg.Error != "" {
+			return fmt.Errorf("%s", msg.Error)
+		}
+		return fmt.Errorf("relay server rejected the connection")
+	default:
+		return fmt.Errorf("unexpected response from relay server while connecting")
+	}
 }
 
 // runCall executes args on machine and exits the process with the remote
@@ -102,7 +133,7 @@ func runCall(serverURL, machine string, args []string) {
 	defer conn.Close()
 
 	id := uuid.NewString()
-	if err := conn.WriteJSON(execMessage{Action: "exec", Target: machine, ID: id, Args: args}); err != nil {
+	if err := conn.WriteJSON(execMessage{Action: "exec", Target: machine, ID: id, Args: args, Token: token}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to send command: %v\n", err)
 		os.Exit(1)
 	}
@@ -148,11 +179,6 @@ func runCall(serverURL, machine string, args []string) {
 	}
 }
 
-type listReply struct {
-	Action   string   `json:"action"`
-	Machines []string `json:"machines"`
-}
-
 // runList prints the currently connected machine names, one per line.
 func runList(serverURL string) {
 	token, err := accessToken()
@@ -167,7 +193,7 @@ func runList(serverURL string) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(execMessage{Action: "list"}); err != nil {
+	if err := conn.WriteJSON(execMessage{Action: "list", Token: token}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to request machine list: %v\n", err)
 		os.Exit(1)
 	}
@@ -179,9 +205,17 @@ func runList(serverURL string) {
 		os.Exit(1)
 	}
 
-	var reply listReply
+	var reply execMessage
 	if err := json.Unmarshal(data, &reply); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid response from relay server\n")
+		os.Exit(1)
+	}
+	if reply.Action == "exit" {
+		if reply.Error != "" {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", reply.Error)
+		} else {
+			fmt.Fprintln(os.Stderr, "Error: relay server rejected the request")
+		}
 		os.Exit(1)
 	}
 
@@ -193,4 +227,3 @@ func runList(serverURL string) {
 		fmt.Println(m)
 	}
 }
-

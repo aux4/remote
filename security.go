@@ -10,9 +10,25 @@ package main
 // is NOT "allow everything" (as it would be in aux4 core) — it is "deny
 // everything". The daemon is non-interactive, so `ask` is also treated as
 // deny. See isExposed below.
+//
+// Patterns are matched against the aux4 command line: msg.Args space-joined,
+// WITHOUT a leading "aux4" (e.g. allow `["todo list*", "aux4 version"]` to
+// permit `aux4 remote <machine> todo list ...` and `aux4 remote <machine>
+// aux4 version`). This is exactly the "path as typed after aux4" that aux4
+// core's own AUX4_SECURITY enforcement matches against (see
+// aux4.dev/aux4/engine/security and resolveSecurityPolicy/enforceSecurity in
+// aux4 core's security.go), so toAux4Security below can hand the same
+// patterns straight through as defense in depth: the nested `aux4` process
+// evaluates the identical path and arrives at the identical decision.
+//
+// No shell is ever involved in running the command (see runExec in
+// client.go), so there is no way for a caller to smuggle a second command
+// into msg.Args that would change what cmdLine below represents — each
+// element of msg.Args becomes exactly one argv entry to the child process.
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -193,6 +209,42 @@ func (p *exposePolicy) compile(pattern string) *regexp.Regexp {
 	re := regexp.MustCompile(b.String())
 	p.cache[pattern] = re
 	return re
+}
+
+// validateArgs rejects an args list whose space-joined representation does
+// not round-trip back to exactly those arguments when split on single
+// spaces. Policy matching (isExposed, and the nested aux4 process's own
+// AUX4_SECURITY check) both operate on strings.Join(args, " "), so if that
+// join is ambiguous - an empty arg, an arg with leading/trailing whitespace,
+// or doubled/irregular internal whitespace - a caller can shape args so the
+// resulting cmdLine no longer matches a pattern that was written to describe
+// the equivalent, "normally spaced" command, while the underlying argv
+// (passed through to exec.Command untouched, never rejoined) can still carry
+// the same effective arguments to the child process. For example
+// `["todo ", "rm"]` joins to `"todo  rm"` (double space), which `deny:
+// ["todo rm*"]` (single space) does not match, even though the intent of
+// that pattern is clearly to block this command. Rather than try to
+// "normalize" (collapse) whitespace - which would just move the ambiguity
+// elsewhere - this rejects the exec outright with a clear message.
+func validateArgs(args []string) error {
+	for _, a := range args {
+		if a == "" {
+			return fmt.Errorf("empty argument is not permitted")
+		}
+		if strings.TrimSpace(a) != a {
+			return fmt.Errorf("argument %q has leading or trailing whitespace, which is not permitted", a)
+		}
+		for _, r := range a {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("argument %q contains a control character, which is not permitted", a)
+			}
+		}
+	}
+	cmdLine := strings.Join(args, " ")
+	if strings.Join(strings.Fields(cmdLine), " ") != cmdLine {
+		return fmt.Errorf("arguments contain irregular whitespace, which is not permitted")
+	}
+	return nil
 }
 
 // toAux4Security renders the policy as the JSON shape aux4 core's AUX4_SECURITY
