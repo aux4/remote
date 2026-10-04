@@ -76,9 +76,17 @@ not created
 ```execute
 aux4 aux4 remote connect --name valid-name --server ws://127.0.0.1:19999/ws --dataDir ./.data-connect-valid
 sleep 1
-stat -f "%Sp" ./.data-connect-valid 2>/dev/null || stat -c "%A" ./.data-connect-valid
-stat -f "%Sp" ./.data-connect-valid/valid-name.pid 2>/dev/null || stat -c "%A" ./.data-connect-valid/valid-name.pid
-stat -f "%Sp" ./.data-connect-valid/valid-name.log 2>/dev/null || stat -c "%A" ./.data-connect-valid/valid-name.log
+# Try GNU coreutils' `-c "%A"` first, then fall back to BSD/macOS's `-f "%Sp"`.
+# The reverse order (BSD flag first) looks portable but is NOT: GNU stat
+# interprets `-f` as "show filesystem status" (a completely different,
+# always-successful mode, not an unrecognized-flag error), so it silently
+# prints filesystem info instead of permissions and the `||` fallback to
+# `-c` never fires on Linux. GNU rejects `-c` outright on BSD/macOS stat
+# (exit 1), so trying `-c` first and falling back to `-f` works cleanly on
+# both platforms.
+stat -c "%A" ./.data-connect-valid 2>/dev/null || stat -f "%Sp" ./.data-connect-valid
+stat -c "%A" ./.data-connect-valid/valid-name.pid 2>/dev/null || stat -f "%Sp" ./.data-connect-valid/valid-name.pid
+stat -c "%A" ./.data-connect-valid/valid-name.log 2>/dev/null || stat -f "%Sp" ./.data-connect-valid/valid-name.log
 ```
 
 ```expect:partial

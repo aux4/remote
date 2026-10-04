@@ -54,6 +54,10 @@ jobs:
       # and not yet on the prod hub. Install it from the dev hub first, scoped to
       # just this command, before test-package-action's own bootstrap runs (which
       # must stay on the default/prod hub, or its own pkger/jest install breaks).
+      # Resolve its dependency chain (aux4/api -> aux4/oauth -> aux4/curl, etc.)
+      # from the default/prod hub FIRST - they are ordinary prod-hub packages,
+      # and the dev hub's mirror of them can go stale (see the darwin job's
+      # comment / RMT-013) - then install only the cloud-remote leaf from dev.
       - name: Install aux4/cloud-remote test dependency from dev hub
         if: github.ref_name == 'dev'
         shell: bash
@@ -61,12 +65,22 @@ jobs:
           curl -fsSL https://aux4.sh | sh
           export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
           curl -fsSL https://pkger.aux4.sh | sh
+          aux4 aux4 pkger install aux4/api
           AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
 
+      # The end-to-end suite runs a real "aux4 todo" command through an
+      # allowed expose glob (remote.test.md: "should allow a command matched
+      # only by a broad allow glob") to prove an allowed command actually
+      # executes, not just that the daemon tries to run it. aux4/todo is not
+      # one of this package's own dependencies (the daemon execs whatever
+      # aux4 command the caller asks for, it does not declare what that
+      # could be), so it has to be provisioned for the test job explicitly -
+      # a clean CI runner does not have it.
       - name: Test
         uses: aux4/test-package-action@v1
         with:
           build_command: aux4 builder linux
+          packages: aux4/todo
 
   test-darwin:
     runs-on: macos-latest
@@ -80,9 +94,23 @@ jobs:
           go-version: '1.23'
 
       # aux4/cloud-remote (the relay this test suite depends on) is cloud-dev-only
-      # and not yet on the prod hub. Install it from the dev hub first, scoped to
-      # just this command, before test-package-action's own bootstrap runs (which
-      # must stay on the default/prod hub, or its own pkger/jest install breaks).
+      # and not yet on the prod hub, so it has to come from the dev hub - but
+      # ONLY it: its own dependency chain (aux4/api -> aux4/oauth -> aux4/curl
+      # -> aux4/config, aux4/secret) is made of ordinary packages that already
+      # live on the default/prod hub, kept current there. The dev hub mirrors
+      # packages on-demand and had gone stale for aux4/curl (missing a
+      # darwin_arm64 build), which made pkger fail every dependency in the
+      # chain with "not compatible with your platform" on macos-latest
+      # (Apple Silicon) runners the moment AUX4_REGISTRY_URL pointed the WHOLE
+      # install - leaf package AND every transitive dependency - at the dev
+      # hub (RMT-013). Confirmed on a real darwin_arm64 machine: the prod hub's
+      # aux4/curl installs cleanly; only the dev hub copy was behind.
+      #
+      # Fix: resolve the dependency chain from the default (prod) hub first,
+      # with no AUX4_REGISTRY_URL override, then install only the
+      # aux4/cloud-remote leaf from the dev hub - pkger finds its
+      # already-installed dependencies satisfied locally and never re-resolves
+      # them from the dev hub at all.
       - name: Install aux4/cloud-remote test dependency from dev hub
         if: github.ref_name == 'dev'
         shell: bash
@@ -90,12 +118,14 @@ jobs:
           curl -fsSL https://aux4.sh | sh
           export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
           curl -fsSL https://pkger.aux4.sh | sh
+          aux4 aux4 pkger install aux4/api
           AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
 
       - name: Test
         uses: aux4/test-package-action@v1
         with:
           build_command: aux4 builder darwin
+          packages: aux4/todo
 
   publish:
     needs: [test-linux, test-darwin]
