@@ -59,8 +59,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL https://aux4.sh | sh
-          curl -fsSL https://pkger.aux4.sh | sh
           export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
+          curl -fsSL https://pkger.aux4.sh | sh
           AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
 
       - name: Test
@@ -88,8 +88,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL https://aux4.sh | sh
-          curl -fsSL https://pkger.aux4.sh | sh
           export PATH="$HOME/.aux4.config/packages/aux4/aux4:$PATH"
+          curl -fsSL https://pkger.aux4.sh | sh
           AUX4_REGISTRY_URL=https://dev.api.hub.aux4.io/v1/packages aux4 aux4 pkger install aux4/cloud-remote
 
       - name: Test
