@@ -91,8 +91,20 @@ AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-empty-expos
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-ask --dataDir ./.data-ask 2>/dev/null
 AUX4_ACCESS_TOKEN=token-a aux4 aux4 remote disconnect --name machine-bare-allow --dataDir ./.data-bare-allow 2>/dev/null
 aux4 api stop 2>/dev/null
-pkill -f "aux4-remote client" 2>/dev/null
-pkill -f sso-mock.js 2>/dev/null
+# Every named machine above is already stopped by its own `remote disconnect`
+# call, so there is no live "aux4-remote connect" daemon left to clean up here.
+# This used to additionally run `pkill -f "aux4-remote client"` (a pattern
+# that never matched any real process - the daemon is invoked as
+# "<dir>/aux4-remote connect ...", never "client") but on GNU/Linux pkill -f
+# matches the FULL argv of every process, including the `sh -c "<this whole
+# script>"` process running this very afterAll - whose argv literally
+# contains that pattern string. That self-match SIGTERMed the cleanup shell
+# before it reached this line, silently skipping the rm -rf below on every
+# Linux run (not caught by any assertion since afterAll output isn't
+# checked). Anchoring the remaining pattern to the start of the command line
+# (^) avoids the same trap, since the self shell's argv starts with
+# "sh"/"/bin/sh", never "node".
+pkill -f "^node sso-mock.js" 2>/dev/null
 rm -rf .aux4-cloud-remote .data-a .data-broad-deny .data-empty-expose .data-ask .data-bare-allow server.log sso-mock.log
 true
 ```
