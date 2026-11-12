@@ -80,7 +80,7 @@ jobs:
         uses: aux4/test-package-action@v1
         with:
           build_command: aux4 builder linux
-          packages: aux4/todo
+          packages: ${{ github.ref_name == 'dev' && 'aux4/todo' || 'aux4/todo aux4/cloud-remote' }}
 
   test-darwin:
     runs-on: macos-latest
@@ -125,7 +125,7 @@ jobs:
         uses: aux4/test-package-action@v1
         with:
           build_command: aux4 builder darwin
-          packages: aux4/todo
+          packages: ${{ github.ref_name == 'dev' && 'aux4/todo' || 'aux4/todo aux4/cloud-remote' }}
 
   publish:
     needs: [test-linux, test-darwin]
