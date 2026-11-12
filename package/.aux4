@@ -1,7 +1,7 @@
 {
   "scope": "aux4",
   "name": "remote",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "run aux4 commands (only aux4 commands - never arbitrary binaries) on another machine through an aux4/cloud-remote relay server",
   "license": "MIT",
   "dependencies": [
