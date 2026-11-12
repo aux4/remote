@@ -78,3 +78,45 @@ test -f ./.data-disconnect-3/stale-machine.pid && echo "still there" || echo "re
 ```expect
 removed
 ```
+
+## an invalid machine name
+
+### should reject a name containing a path separator
+
+```execute
+aux4 aux4 remote disconnect --name "../escape" --dataDir ./.data-disconnect-invalid-1
+```
+
+```error:partial
+invalid
+```
+
+### should not create the dataDir for a rejected name
+
+```execute
+test -d ./.data-disconnect-invalid-1 && echo "created" || echo "not created"
+```
+
+```expect
+not created
+```
+
+### should reject a name containing a shell metacharacter
+
+```execute
+aux4 aux4 remote disconnect --name 'live-machine; rm -rf /tmp/should-not-run' --dataDir ./.data-disconnect-invalid-2
+```
+
+```error:partial
+invalid
+```
+
+### should not create the dataDir for a rejected metacharacter name
+
+```execute
+test -d ./.data-disconnect-invalid-2 && echo "created" || echo "not created"
+```
+
+```expect
+not created
+```
