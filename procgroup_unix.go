@@ -37,3 +37,24 @@ func killProcessGroup(cmd *exec.Cmd) error {
 func detachNewSession(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
+
+// killPID signals the daemon process started by "connect" for
+// runDisconnect, with the exact same signal and scope as the shell pipeline
+// it replaces (`kill $(cat "$dataDir/$name.pid")` - SIGTERM, that one pid
+// only). Deliberately NOT a process-group kill: unlike a running "aux4 exec"
+// child (which setProcessGroup/killProcessGroup put in and tear down as a
+// whole group because it is a short-lived, uniquely-identified child this
+// same process just started), a pid read back out of a pid file on disk can,
+// after the daemon has long since exited, have been reused by a completely
+// unrelated process by the time disconnect runs - verified empirically: an
+// earlier version of this function that resolved and signaled -pgid instead
+// of the bare pid took down an unrelated process group sharing that
+// recycled pid during a real test run. Signaling only the exact pid bounds
+// the blast radius to "this one process, if it is even still the one we
+// started" - the same bound the original `kill <pid>` always had.
+func killPID(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	return syscall.Kill(pid, syscall.SIGTERM)
+}

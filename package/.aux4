@@ -1,7 +1,7 @@
 {
   "scope": "aux4",
   "name": "remote",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "run aux4 commands (only aux4 commands - never arbitrary binaries) on another machine through an aux4/cloud-remote relay server",
   "license": "MIT",
   "dependencies": [
@@ -95,10 +95,7 @@
         {
           "name": "disconnect",
           "execute": [
-            "set:pidFile=${dataDir}/${name}.pid",
-            "kill $(cat value(pidFile)) 2>/dev/null || true",
-            "rm -f value(pidFile)",
-            "log:Disconnected value(name)"
+            "${packageDir}/aux4-remote disconnect values(dataDir, name)"
           ],
           "help": {
             "text": "Disconnect this machine from the relay server",

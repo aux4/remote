@@ -1,5 +1,25 @@
 # Release Notes
 
+## 0.3.9
+
+- **`aux4 aux4 remote disconnect` no longer builds a raw shell command out of `--name`/`--dataDir`.**
+  The `.aux4` layer used to interpolate both unvalidated into `kill $(cat "$dataDir/$name.pid") ...`
+  (low-severity, defense-in-depth finding from pre-prod review - `name`/`dataDir` are local, not
+  attacker-reachable over the relay, but every other command that touches these values already
+  validates and builds paths in Go, not a shell string). `disconnect` now moves into the Go binary
+  like `connect`/`status` already were: `name` is validated with the exact same `^[A-Za-z0-9._-]+$`
+  + no-`..` rule (`validateName`), the pid path is built with `filepath.Join`, and the pid file's
+  content is parsed as an integer in Go rather than handed to a shell's `$(cat ...)` substitution.
+  Output and exit codes for valid input are unchanged (`Disconnected '<name>'`, exit 0).
+- **The daemon's own pid is now signaled directly, not by process group.** An earlier draft of this
+  fix tried signaling the pid's whole process group (`-pgid`), matching the group-kill semantics this
+  daemon already uses for an in-flight `aux4 exec` child. That is unsafe for a pid read back out of a
+  pid file on disk: if the daemon has long since exited, that pid can have been recycled by an
+  unrelated process by the time `disconnect` runs, and a process-group kill then reaches everything
+  in that unrelated process's group too - reproduced once, against an unrelated process group during
+  local testing. `disconnect` now signals (`SIGTERM`) only the exact pid it read, the same bounded
+  scope the original `kill <pid>` shell command always had.
+
 ## 0.3.6
 
 - **CI only, no behavior change.** Fixed 3 test-environment bugs surfaced by this repo's first real

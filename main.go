@@ -134,6 +134,16 @@ func main() {
 		}
 		runStatus(args[0], args[1])
 
+	case "disconnect":
+		// disconnect <dataDir> <name> — validates name itself instead of
+		// relying on the .aux4 layer to interpolate dataDir/name into a raw
+		// `kill $(cat ...)` shell command.
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: aux4-remote disconnect <dataDir> <name>")
+			os.Exit(1)
+		}
+		runDisconnect(args[0], args[1])
+
 	case "machine-list":
 		// machine-list <server>
 		if len(args) < 1 {
@@ -248,4 +258,46 @@ func runStatus(pidFile, name string) {
 		return
 	}
 	fmt.Printf("%s: connected (pid %d)\n", name, pid)
+}
+
+// runDisconnect stops the daemon referenced by <dataDir>/<name>.pid and
+// removes the pid file, mirroring the previous .aux4-level
+// `kill $(cat "$dataDir/$name.pid") 2>/dev/null || true; rm -f "$dataDir/$name.pid"`
+// shell pipeline, but without ever building a shell command line out of
+// dataDir/name: name is validated with the exact same rule connect/status
+// use (validateName), the pid path is built with filepath.Join in Go, and
+// the pid file's content is parsed as an integer here rather than handed to
+// a shell's `$(cat ...)` substitution. Matches the prior behavior for valid
+// input - a missing pid file, an unreadable/non-numeric pid, or a pid that is
+// already gone are all treated the same way the old `|| true` swallowed
+// them: no error, pid file removed, "Disconnected <name>" printed, exit 0.
+func runDisconnect(dataDir, name string) {
+	if err := validateName(name); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// name is already validated above (no "/", no "..", no control chars), so
+	// joining it with dataDir cannot escape dataDir.
+	disconnectPidFile(filepath.Join(dataDir, name+".pid"))
+
+	fmt.Printf("Disconnected '%s'\n", name)
+}
+
+// disconnectPidFile does the actual work split out of runDisconnect so it is
+// testable without the validateName/os.Exit control flow: best-effort kill
+// whatever pid is recorded at pidFile, then remove the file. A missing file,
+// unreadable/non-numeric content, or a pid that is already gone are all
+// silently tolerated, same as the old shell pipeline's `kill ... || true`.
+func disconnectPidFile(pidFile string) {
+	if data, err := os.ReadFile(pidFile); err == nil {
+		var pid int
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); err == nil && pid > 0 {
+			// Best effort, same as the old `kill ... 2>/dev/null || true`: a
+			// pid that is already gone, or that this process has no
+			// permission to signal, is not an error here.
+			_ = killPID(pid)
+		}
+	}
+	_ = os.Remove(pidFile)
 }
